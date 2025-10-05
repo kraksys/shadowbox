@@ -1,8 +1,8 @@
 # ShadowBox Development Roadmap
 
-**Project**: Private File Sharing Application  
-**Team**: Group 17 (6 members)  
-**Timeline**: 12 weeks (3 months)  
+**Project**: Private File Sharing Application
+**Team**: Group 17 (6 members)
+**Timeline**: 12 weeks (3 months)
 **Buffer Time**: Built into each phase for overhead, testing, and iteration
 
 ## Project Structure Setup
