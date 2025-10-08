@@ -39,6 +39,69 @@ class ServiceFinder:
         """
         Called by ServiceBrowser for added/removed/updated services.
         We attempt to resolve the service info and set it as found.
+        Works with IPv4 and IPv6.
         """
         pass
+        # We only care when a service is added (or updated) and we haven't already resolved one.
+        if self._found_event.is_set():
+            return
+
+        try:
+            info = zeroconf.get_service_info(service_type, name, timeout=2000)  # 2s blocking resolve
+            if info:
+                # prefer IPv4 if present; fall back to first address
+                ip = None
+                if info.addresses:
+                    # detect IPv4 vs IPv6 by length of packed address
+                    for packed in info.addresses:
+                        if len(packed) == 4:  # IPv4
+                            # Convert an IP address from 32-bit packed binary format to string format
+                            ip = socket.inet_ntoa(packed)
+                            break
+                    if ip is None:
+                        # take the first address (likely IPv6) and convert
+                        try:
+                            ip = socket.inet_ntop(socket.AF_INET6, info.addresses[0])
+                        except Exception:
+                            ip = None
+
+                port = info.port
+                props = {}
+                for k, v in (info.properties or {}).items():
+                    # keys are bytes in many zeroconf versions; decode if necessary
+                    if isinstance(k, bytes):
+                        k = k.decode(errors="ignore")
+                    if isinstance(v, bytes):
+                        try:
+                            v = v.decode()
+                        except Exception:
+                            # keep raw bytes if cannot decode
+                            pass
+                    props[k] = v
+
+                if ip:
+                    self.found_info = {
+                        "name": name,
+                        "ip": ip,
+                        "port": port,
+                        "properties": props
+                    }
+                    self._found_event.set()
+        except Exception as e:
+            # ignore transient resolution errors
+            # like dropped or delayed mDNS packets
+            print(f"Transient resolution error: {e}")
+            pass
+
+    def wait_for_service(self):
+        got = self._found_event.wait(self._timeout)
+        if not got:
+            return None
+        return self.found_info
+
+    def close(self):
+        try:
+            self.zeroconf.close()
+        except Exception:
+            pass
 
