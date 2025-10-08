@@ -70,10 +70,10 @@ class ServiceFinder:
                 for k, v in (info.properties or {}).items():
                     # keys are bytes in many zeroconf versions; decode if necessary
                     if isinstance(k, bytes):
-                        k = k.decode(errors="ignore")
+                        k = k.decode(encoding="utf-8") # we can change errors="replace" later
                     if isinstance(v, bytes):
                         try:
-                            v = v.decode()
+                            v = v.decode(encoding="utf-8")
                         except Exception:
                             # keep raw bytes if cannot decode
                             pass
@@ -105,3 +105,104 @@ class ServiceFinder:
         except Exception:
             pass
 
+
+def connect_and_request(ip, port, request_line, recv_file=False, out_path=None, timeout=10):
+    """
+    Connect to ip:port, send a single request_line (ending with '\n'), and either:
+      - if recv_file==False: read until the remote closes or a blank line and print text
+      - if recv_file==True: stream bytes to out_path until remote closes
+    """
+    print(f"Connecting to {ip}:{port} ...")
+    with socket.create_connection((ip, port), timeout=timeout) as s:
+        s.settimeout(timeout) # 10s might be too much
+
+        # send request
+        if not request_line.endswith("\n"):
+            request_line = request_line + "\n"
+        s.sendall(request_line.encode())
+
+        if recv_file:
+            if not out_path:
+                raise ValueError("out_path required when recv_file=True")
+            print(f"Receiving file to {out_path} ...")
+            with open(out_path, "wb") as f:
+                while True:
+                    try:
+                        chunk = s.recv(8192) # we can lower to 1024 or READ_BUF (it's TCP so it doesn't matter that much)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                    except socket.timeout:
+                        print("Socket timeout while receiving.")
+                        break
+            print("File receive complete.")
+            return {"status": "ok", "saved_to": out_path}
+        else:
+            # read textual response until socket closes (or timeout)
+            parts = []
+            while True:
+                try:
+                    chunk = s.recv(READ_BUF)
+                except socket.timeout:
+                    # treat timeout as end of response
+                    break
+                if not chunk:
+                    break
+                try:
+                    parts.append(chunk.decode()) # utf-8
+                except Exception:
+                    parts.append(str(chunk))
+            data = "".join(parts)
+            return {"status": "ok", "text": data}
+
+
+def main(argv):
+    if len(argv) <= 1:
+        cmd = "LIST"
+        args = []
+    else:
+        cmd = argv[1].upper()
+        args = argv[2:] # after python server.py GET
+
+    finder = ServiceFinder()
+    try:
+        print(f"Searching for Zeroconf services of type {SERVICE_TYPE} (timeout {DISCOVER_TIMEOUT}s)...")
+        info = finder.wait_for_service()
+        if not info:
+            print("No service found within timeout.")
+            return 420
+
+        print("Found service:")
+        print("  name:", info["name"])
+        print("  ip:", info["ip"])
+        print("  port:", info["port"])
+        print("  properties:", info["properties"])
+
+        if cmd == "LIST":
+            res = connect_and_request(info["ip"], info["port"], "LIST")
+            if res["status"] == "ok":
+                print("Server response (LIST):")
+                print(res["text"])
+            else:
+                print("Error:", res)
+        elif cmd == "GET":
+            if not args:
+                print("GET requires a filename: python client.py GET <filename>")
+                return 69
+            filename = args[0]
+            # We assume server will stream file bytes directly in response to "GET <filename>\n".
+            out_path = filename  # save with same name locally
+            res = connect_and_request(info["ip"], info["port"], f"GET {filename}", recv_file=True, out_path=out_path)
+            print(res)
+        else:
+            print("Unknown command:", cmd)
+            return 69
+
+    finally:
+        finder.close()
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
