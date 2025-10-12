@@ -1,4 +1,3 @@
-
 """
 Discover a Zeroconf service of type _shadowbox._tcp.local., connect to the advertised
 IP:port:
@@ -6,18 +5,22 @@ IP:port:
 Commands:
   LIST             -> request a newline-separated list of available files (./shared_dir)
   GET <filename>   -> request the given filename
+  PUT <local_path> [remote_name] -> upload a local file to the server
+  DELETE <filename> -> delete remote file
 
 Usage:
   python zeroconf_client.py [LIST]
   python zeroconf_client.py GET <filename>
+  python zeroconf_client.py PUT <local_path> [remote_name]
+  python zeroconf_client.py DELETE <filename>
 
 If no arguments given, defaults to LIST.
 [still not finished]
 """
-
+import os
 import sys
 import socket
-import time # not in use so far
+import time  # not in use so far
 import threading
 from zeroconf import Zeroconf, ServiceBrowser, ServiceInfo
 
@@ -25,9 +28,10 @@ SERVICE_TYPE = "_shadowbox._tcp.local."
 DISCOVER_TIMEOUT = 8.0  # seconds to wait for service discovery
 READ_BUF = 4096
 
+
 class ServiceFinder:
     def __init__(self, service_type=SERVICE_TYPE, timeout=DISCOVER_TIMEOUT):
-        self.zeroconf = Zeroconf() # opens mDNS sockets
+        self.zeroconf = Zeroconf()  # opens mDNS sockets
         self.service_type = service_type
         self.found_info = None
         self._found_event = threading.Event()
@@ -70,7 +74,7 @@ class ServiceFinder:
                 for k, v in (info.properties or {}).items():
                     # keys are bytes in many zeroconf versions; decode if necessary
                     if isinstance(k, bytes):
-                        k = k.decode(encoding="utf-8") # we can change errors="replace" later
+                        k = k.decode(encoding="utf-8")  # we can change errors="replace" later
                     if isinstance(v, bytes):
                         try:
                             v = v.decode(encoding="utf-8")
@@ -114,7 +118,7 @@ def connect_and_request(ip, port, request_line, recv_file=False, out_path=None, 
     """
     print(f"Connecting to {ip}:{port} ...")
     with socket.create_connection((ip, port), timeout=timeout) as s:
-        s.settimeout(timeout) # 10s might be too much
+        s.settimeout(timeout)  # 10s might be too much
 
         # send request
         if not request_line.endswith("\n"):
@@ -125,12 +129,15 @@ def connect_and_request(ip, port, request_line, recv_file=False, out_path=None, 
             if not out_path:
                 raise ValueError("out_path required when recv_file=True")
             print(f"Receiving file to {out_path} ...")
-            with open(out_path, "wb") as f:
+            with open(out_path, "wb") as f: # this automatically creates a file, but it can't create a directory
                 while True:
                     try:
-                        chunk = s.recv(8192) # we can lower to 1024 or READ_BUF (it's TCP so it doesn't matter that much)
+                        chunk = s.recv(
+                            8192)  # we can lower to 1024 or READ_BUF (it's TCP so it doesn't matter that much)
                         if not chunk:
                             break
+                        if chunk.startswith(b"ERROR: File not found:"):
+                            return {"status": "error", "error": f"File not found: {out_path}"}
                         f.write(chunk)
                     except socket.timeout:
                         print("Socket timeout while receiving.")
@@ -149,11 +156,105 @@ def connect_and_request(ip, port, request_line, recv_file=False, out_path=None, 
                 if not chunk:
                     break
                 try:
-                    parts.append(chunk.decode()) # utf-8
+                    parts.append(chunk.decode())  # utf-8
                 except Exception:
                     parts.append(str(chunk))
             data = "".join(parts)
             return {"status": "ok", "text": data}
+
+
+def cmd_list(ip, port):
+    res = connect_and_request(ip, port, "LIST")
+    if res["status"] == "ok":
+        print(res["text"])
+    else:
+        print("Error:", res)
+
+
+def cmd_get(ip, port, filename, out_path=None):
+    if out_path is None:
+        out_path = filename
+    res = connect_and_request(ip, port, f"GET {filename}", recv_file=True, out_path=out_path)
+    if res["status"] == "ok":
+        pass
+    else:
+        # TODO: find a better way to handle this error
+        os.remove(out_path)  # !!! This can delete an existing file, but it'd be a corrupted one so it's fine
+    print(res)
+
+
+def cmd_put(ip, port, local_path, remote_name=None, timeout=60):
+    """
+    Upload a local file to the server.
+    Protocol:
+      Client -> "PUT <remote_name> <size>\n"
+      Server -> "READY\n"  (or "ERROR: ...\n")
+      Client -> exactly <size> bytes
+      Server -> final textual reply
+    """
+    if not os.path.exists(local_path) or not os.path.isfile(local_path):
+        print("Local file not found:", local_path)
+        return {"status": "error", "error": "local file not found"}
+
+    if remote_name is None:
+        # This is like in get we can give a different name of the file saved on the client side,
+        # but it saves the file with the given remote name on the server side
+        remote_name = os.path.basename(local_path)
+
+    size = os.path.getsize(local_path)
+
+    print(f"Uploading {local_path} -> {ip}:{port} as {remote_name} ({size} bytes)")
+    with socket.create_connection((ip, port), timeout=timeout) as s:
+        s.settimeout(timeout)
+        s.sendall(f"PUT {remote_name} {size}\n".encode())
+
+        # wait for READY or ERROR line (single-line response)
+        resp = b""
+        while not resp.endswith(b"\n"):
+            chunk = s.recv(1024)
+            if not chunk:
+                raise IOError("no response from server")
+            resp += chunk
+        resp_text = resp.decode().strip()
+        if resp_text.upper().startswith("ERROR"):
+            print("Server error:", resp_text)
+            return {"status": "error", "error": resp_text}
+
+        if not resp_text.upper().startswith("READY"):  # just in case we mess up smth on the server side
+            print("Unexpected server response:", resp_text)
+            return {"status": "error", "error": resp_text}
+
+        # send file bytes
+        with open(local_path, "rb") as f:
+            while True:
+                chunk = f.read(8192)
+                if not chunk:
+                    break
+                s.sendall(chunk)
+
+        # read final reply (text) until socket closes or timeout
+        final = b""
+        while True:
+            try:
+                chunk = s.recv(1024)
+            except socket.timeout:
+                break
+            if not chunk:
+                break
+            final += chunk
+
+        final_text = final.decode(errors="ignore").strip()
+        print("Server reply:", final_text)
+        return {"status": "ok", "reply": final_text}
+
+
+def cmd_delete(ip, port, filename, timeout=30):
+    res = connect_and_request(ip, port, f"DELETE {filename}", timeout=timeout)
+    if res["status"] == "ok":
+        print(res["text"])
+    else:
+        print("Error:", res)
+    return res
 
 
 def main(argv):
@@ -162,7 +263,7 @@ def main(argv):
         args = []
     else:
         cmd = argv[1].upper()
-        args = argv[2:] # after python server.py GET
+        args = argv[2:]
 
     finder = ServiceFinder()
     try:
@@ -170,7 +271,7 @@ def main(argv):
         info = finder.wait_for_service()
         if not info:
             print("No service found within timeout.")
-            return 420
+            return 2
 
         print("Found service:")
         print("  name:", info["name"])
@@ -178,25 +279,34 @@ def main(argv):
         print("  port:", info["port"])
         print("  properties:", info["properties"])
 
+        ip = info["ip"]
+        port = info["port"]
+
         if cmd == "LIST":
-            res = connect_and_request(info["ip"], info["port"], "LIST")
-            if res["status"] == "ok":
-                print("Server response (LIST):")
-                print(res["text"])
-            else:
-                print("Error:", res)
+            cmd_list(ip, port)
         elif cmd == "GET":
             if not args:
-                print("GET requires a filename: python client.py GET <filename>")
-                return 69
+                print("GET requires a filename: python zeroconf_client.py GET <filename>")
+                return 1
             filename = args[0]
-            # We assume server will stream file bytes directly in response to "GET <filename>\n".
-            out_path = filename  # save with same name locally
-            res = connect_and_request(info["ip"], info["port"], f"GET {filename}", recv_file=True, out_path=out_path)
-            print(res)
+            out = args[1] if len(args) >= 2 else None
+            cmd_get(ip, port, filename, out_path=out)
+        elif cmd == "PUT":
+            if not args:
+                print("PUT requires a local path: python zeroconf_client.py PUT <local_path> [remote_name]")
+                return 1
+            local_path = args[0]
+            remote_name = args[1] if len(args) >= 2 else None
+            cmd_put(ip, port, local_path, remote_name)
+        elif cmd == "DELETE":
+            if not args:
+                print("DELETE requires a filename: python zeroconf_client.py DELETE <filename>")
+                return 1
+            filename = args[0]
+            cmd_delete(ip, port, filename)
         else:
             print("Unknown command:", cmd)
-            return 69
+            return 1
 
     finally:
         finder.close()
