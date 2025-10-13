@@ -4,7 +4,7 @@ This is placed such that there is a general error catcher
 """
 
 
-class ShadbowBoxError(Exception):
+class ShadowBoxError(Exception):
     # general container for errors
     pass
 
@@ -12,10 +12,25 @@ class ShadbowBoxError(Exception):
 class StorageError(ShadowBoxError):
     # raised if storage fails in some way (defined later)
     pass
+    
+
+class InitializationError(ShadowboxError):
+    #Raised when there is an error initializing a component.
+    pass
 
 
 class FileNotFoundError(StorageError):
     # raised if a file not found in storage
+    pass
+
+
+class UserNotFoundError(ShadowboxError):
+    # Raised when a user is not found in the database.
+    pass
+
+
+class UserExistsError(ShadowboxError):
+    # Raised when trying to create a user that already exists.
     pass
 
 
@@ -37,7 +52,12 @@ class PermissionError(ShadowBoxError):
 class QuotaExceededError(StorageError):
     # raised when storage cap is exceeded (i.e. existing local capacity)
     pass
-
+    
+    
+class IntegrityCheckFailedError(ShadowboxError):
+    # Raised when a file's hash does not match its expected value.
+    pass
+    
 
 class InvalidPathError(StorageError):
     # raised when path DNE
