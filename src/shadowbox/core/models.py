@@ -29,12 +29,12 @@ class FileStatus(Enum):
 
 class FileMetadata: 
     __slots__ = (
-        'file_id', 
+        'file_id',
         'filename',
         'original_path',
         'size',
-        'filetype',
-        'mimetype',
+        'file_type',
+        'mime_type',
         'hash_sha256',
         'created_at',
         'modified_at',
@@ -48,28 +48,28 @@ class FileMetadata:
         'description',
         'custom_metadata'
     )
-
-    def __init__(self, file_id=None, filename="",original_path="",size=0,filetype=None,mimetype=None,hash_sha256=None,created_at=None,modified_at=None,accessed_at=None,user_id="",owner="",status=None,version=1,parent_version_id=None,tags=None,description=None,custom_metadata=None):
-        """ 
+    
+    def __init__(self, file_id=None, filename="", original_path="", size=0, file_type=None, mime_type=None, hash_sha256=None, created_at=None, modified_at=None, accessed_at=None, user_id="", owner="", status=None, version=1, parent_version_id=None, tags=None, description=None, custom_metadata=None):
+        """
             Initialize file metadata
         """
         self.file_id = file_id if file_id is not None else str(uuid.uuid4())
-        self.filename = filename 
-        self.original_path = original_path 
-        self.size = size 
-        self.filetype = filetype if filetype is not None else FileType.OTHER 
-        self.mimetype = mimetype 
-        self.hash_sha256 
+        self.filename = filename
+        self.original_path = original_path
+        self.size = size
+        self.file_type = file_type if file_type is not None else FileType.OTHER
+        self.mime_type = mime_type
+        self.hash_sha256 = hash_sha256
         self.created_at = created_at if created_at is not None else datetime.utcnow()
-        self.modified_at = modified_at if modified_at is not None else datetime.utcnow() 
-        self.accessed_at = accesssed_at if accessed_at is not None else datetime.utcnow()
+        self.modified_at = modified_at if modified_at is not None else datetime.utcnow()
+        self.accessed_at = accessed_at if accessed_at is not None else datetime.utcnow()
         self.user_id = user_id
-        self.owner = owner 
-        self.status = status if status is not None else FileStatus.ACTIVE 
-        self.version = version 
+        self.owner = owner
+        self.status = status if status is not None else FileStatus.ACTIVE
+        self.version = version
         self.parent_version_id = parent_version_id
         self.tags = tags if tags is not None else []
-        self.description = description 
+        self.description = description
         self.custom_metadata = custom_metadata if custom_metadata is not None else {}
 
     def to_dict(self):
@@ -166,9 +166,9 @@ class UserDirectory:
         Represents a user's directory structure
     """
 
-      __slots__ = ('user_id', 'username', 'root_path', 'created_at', 'quota_bytes', 'used_bytes')
+    __slots__ = ('user_id', 'username', 'root_path', 'created_at', 'quota_bytes', 'used_bytes')
 
-      def __init__(self,user_id,username,root_path,created_at=None,quota_bytes=10 * 1024 * 1024 * 1024,used_bytes=0):
+    def __init__(self,user_id,username,root_path,created_at=None,quota_bytes=10 * 1024 * 1024 * 1024,used_bytes=0):
           """
               Initialize UserDirectory
           """
@@ -179,13 +179,13 @@ class UserDirectory:
           self.quota_bytes = quota_bytes
           self.used_bytes = used_bytes
 
-      def get_quota_remaining(self):
+    def get_quota_remaining(self):
           """
               Calculate remaining quota bytes 
           """
           return max(0, self.quota_bytes - self.used_bytes)
 
-      def get_quota_percentage(self):
+    def get_quota_percentage(self):
           """
               Calculate quota usage percentage
           """
@@ -193,7 +193,7 @@ class UserDirectory:
               return 100.0
           return (self.used_bytes / self.quota_bytes) * 100
 
-      def to_dict(self):
+    def to_dict(self):
           """
               Convert to dictionary
           """
@@ -206,10 +206,9 @@ class UserDirectory:
               'used_bytes': self.used_bytes,
           }
 
-      def __repr__(self):
+    def __repr__(self):
           """String representation."""
-          return f"UserDirectory(user_id={self.user_id!r}, 
-  username={self.username!r})"
+          return f"UserDirectory(user_id={self.user_id!r}, username={self.username!r})"
 
 
 class Snapshot:
