@@ -247,8 +247,7 @@ class FileModel(BaseModel):
             Returns:
                 True if successful
         """
-        query = 
-        """
+        query = """
             UPDATE files SET
                 filename = ?,
                 size = ?,
@@ -359,8 +358,7 @@ class FileModel(BaseModel):
             Returns:
                 List of tag names
         """
-        query = 
-        """
+        query ="""
             SELECT t.tag_name
             FROM tags t
             JOIN file_tags ft ON t.tag_id = ft.tag_id
