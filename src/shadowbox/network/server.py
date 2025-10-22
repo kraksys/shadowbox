@@ -41,6 +41,20 @@ def get_file_lock(path):
             file_locks[path] = lock
         return lock
 
+def delete_path(path):
+    """Delete a file or directory (even non-empty) using only os."""
+    if not os.path.exists(path):
+        return  # Nothing to delete
+
+    if os.path.isfile(path) or os.path.islink(path):
+        os.remove(path)  # Delete file or symbolic link
+    elif os.path.isdir(path):
+        # Recursively delete directory contents
+        for entry in os.listdir(path):
+            entry_path = os.path.join(path, entry)
+            delete_path(entry_path)
+        os.rmdir(path)  # Delete the now-empty directory
+
 
 def get_local_ip():
     """A trick to get the current IP using a UDP socket."""
@@ -75,7 +89,7 @@ def handle_client(conn, addr, shared_dir):
             for file in files:
                 if os.path.isdir(os.path.join(shared_dir, file)):
                     extra_files = os.listdir(os.path.join(shared_dir, file))
-                    response = response + "\n" + file + "\n | " + "\n | ".join(extra_files)
+                    response = response + "\n" + file + " (dir)" + "\n | " + "\n | ".join(extra_files)
                 else:
                     response = response + "\n" + file
 
@@ -202,17 +216,25 @@ def handle_client(conn, addr, shared_dir):
                 return
 
             # TODO: either make a new option to delete directories or delete this, but maybe add a warning or something
-            if os.path.isdir(filepath):
-                msg = f"ERROR: Not a file: {file_name}\n"
-                conn.sendall(msg.encode())
-                print(f"DELETE failed, is a directory: {file_name}")
-                return
+            # This can be turned back into an error
+            # if os.path.isdir(filepath):
+            #     msg = f"ERROR: Not a file: {file_name}\n"
+            #     conn.sendall(msg.encode())
+            #     print(f"DELETE failed, is a directory: {file_name}")
+            #     return
 
             try:
-                os.remove(filepath)
-                msg = f"OK: Deleted {file_name}\n"
-                conn.sendall(msg.encode())
-                print(f"Deleted file: {file_name}")
+                if os.path.isdir(filepath):
+                    delete_path(filepath)
+                    # os.removedirs(filepath) # this can remove only empty dir
+                    msg = f"OK: Deleted: {file_name}\n"
+                    conn.sendall(msg.encode())
+                    print(f"Deleted directory: {file_name}")
+                else:
+                    os.remove(filepath)
+                    msg = f"OK: Deleted {file_name}\n"
+                    conn.sendall(msg.encode())
+                    print(f"Deleted file: {file_name}")
             except Exception as e:
                 msg = f"ERROR: Could not delete {file_name}: {e}\n"
                 conn.sendall(msg.encode())

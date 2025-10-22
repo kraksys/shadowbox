@@ -252,6 +252,8 @@ def cmd_delete(ip, port, filename, timeout=30):
     res = connect_and_request(ip, port, f"DELETE {filename}", timeout=timeout)
     if res["status"] == "ok":
         print(res["text"])
+        # In case we want to delete the file on the client side too.
+        #os.remove(filename)
     else:
         print("Error:", res)
     return res
