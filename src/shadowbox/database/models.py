@@ -7,7 +7,7 @@ from datetime import datetime
 import json
 
 from .connection import DatabaseConnection
-from ..core.models import FileMetadata, FileType, FileStatus, create_metadata_from_dict
+from ..core.models import FileMetadata, FileType, FileStatus
 from ..core.exceptions import StorageError
 
 
