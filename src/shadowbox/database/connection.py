@@ -1,4 +1,4 @@
-"""Database connection and initialization management - no decorators."""
+"""SQLite connection and initialization utilities."""
 
 import sqlite3
 from pathlib import Path
@@ -9,38 +9,21 @@ import json
 from .schema import get_init_schema, SCHEMA_VERSION
 from ..core.exceptions import StorageError
 
-"""
-    We implement a control system to use proper cursors (sessions that connect to db), so that we don't forget closing it (freeing resources) and leaving the db in a failure / incomplete state 
-    Transactions are the operations we perform with our queries, so we need to ensure the ACID properties by properly defining them, sqlite handles the rest 
-"""
-
 
 class DatabaseConnection:
-    """
-    Manages SQLite database connections
-    """
+    """Manage SQLite connections and schema init."""
 
     __slots__ = ("db_path", "_local", "_lock", "_initialized")
 
     def __init__(self, db_path="./shadowbox.db"):
-        """
-        Initialize database connection
-
-        Args:
-            db_path: Path to SQLite db file
-        """
+        """Initialize connection state."""
         self.db_path = Path(db_path)
         self._local = threading.local()
         self._lock = threading.Lock()
         self._initialized = False
 
     def initialize(self):
-        """
-        Initialize db schema
-
-        Raises:
-            StorageError: If init fails
-        """
+        """Initialize schema if not already initialized."""
         if self._initialized:
             return
 
@@ -65,12 +48,7 @@ class DatabaseConnection:
                 raise StorageError(f"Failed to initialize database: {e}")
 
     def _get_connection(self):
-        """
-        Get local db connection
-
-        Returns:
-            SQLite connection object
-        """
+        """Get or create a thread-local SQLite connection."""
         if not hasattr(self._local, "connection") or self._local.connection is None:
             self._local.connection = sqlite3.connect(
                 str(self.db_path), check_same_thread=False, isolation_level=None
@@ -81,34 +59,15 @@ class DatabaseConnection:
         return self._local.connection
 
     def get_cursor_context(self):
-        """
-        Get context manager for db cursor
-
-        Returns:
-            Context manager that gives SQLite cursor
-        """
+        """Return a context manager for a SQLite cursor."""
         return CursorContext(self._get_connection())
 
     def get_transaction_context(self):
-        """
-        Get context manager for db transactions
-
-        Returns:
-            Context manager that gives SQLite cursor with transaction
-        """
+        """Return a transaction context manager (BEGIN/COMMIT/ROLLBACK)."""
         return TransactionContext(self._get_connection())
 
     def execute(self, query, params=None):
-        """
-        Execute a single query
-
-        Args:
-            query: SQL query string
-            params: Optional query parameters
-
-        Returns:
-            Cursor with results
-        """
+        """Execute a single SQL statement and return the cursor."""
         ctx = self.get_cursor_context()
         cursor = ctx.__enter__()
         try:
@@ -121,13 +80,7 @@ class DatabaseConnection:
             ctx.__exit__(None, None, None)
 
     def execute_many(self, query, params_list):
-        """
-        Execute query with multiple parameters
-
-        Args:
-            query: SQL query string
-            params_list: List of parameter tuples
-        """
+        """Execute a statement against multiple parameter sets."""
         ctx = self.get_cursor_context()
         cursor = ctx.__enter__()
         try:
@@ -136,16 +89,7 @@ class DatabaseConnection:
             ctx.__exit__(None, None, None)
 
     def fetch_one(self, query, params=None):
-        """
-        Fetch single row
-
-        Args:
-            query: SQL query string
-            params: Optional query parameters
-
-        Returns:
-            Dictionary of column to value or None
-        """
+        """Fetch a single row as a dict or None."""
         ctx = self.get_cursor_context()
         cursor = ctx.__enter__()
         try:
@@ -160,16 +104,7 @@ class DatabaseConnection:
             ctx.__exit__(None, None, None)
 
     def fetch_all(self, query, params=None):
-        """
-        Fetch all rows
-
-        Args:
-            query: SQL query string
-            params: Optional query parameters
-
-        Returns:
-            List of dictionaries
-        """
+        """Fetch all rows as a list of dicts."""
         ctx = self.get_cursor_context()
         cursor = ctx.__enter__()
         try:
@@ -184,12 +119,7 @@ class DatabaseConnection:
             ctx.__exit__(None, None, None)
 
     def get_version(self):
-        """
-        Get current schema version
-
-        Returns:
-            Schema version number
-        """
+        """Return current schema version number."""
         try:
             result = self.fetch_one("SELECT MAX(version) as version FROM schema_version")
             return result["version"] if result and result["version"] else 0
@@ -197,73 +127,51 @@ class DatabaseConnection:
             return 0
 
     def close(self):
-        """Close database connection."""
+        """Close the thread-local connection if open."""
         if hasattr(self._local, "connection") and self._local.connection:
             self._local.connection.close()
             self._local.connection = None
 
 
 class CursorContext:
-    """
-    Context manager for database cursor
-    """
+    """Context manager for SQLite cursor."""
 
     __slots__ = ("connection", "cursor")
 
     def __init__(self, connection):
-        """
-        Initialize cursor context
-
-        Args:
-            connection: SQLite connection
-        """
+        """Initialize with a SQLite connection."""
         self.connection = connection
         self.cursor = None
 
     def __enter__(self):
-        """
-        Enter context and create cursor
-        """
+        """Create and return a cursor."""
         self.cursor = self.connection.cursor()
         return self.cursor
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """
-        Exit context and close cursor
-        """
+        """Close the cursor."""
         if self.cursor:
             self.cursor.close()
 
 
 class TransactionContext:
-    """
-    Context manager for database transactions
-    """
+    """Context manager for transactions (BEGIN/COMMIT/ROLLBACK)."""
 
     __slots__ = ("connection", "cursor")
 
     def __init__(self, connection):
-        """
-        Initialize transaction context
-
-        Args:
-            connection: SQLite connection
-        """
+        """Initialize with a SQLite connection."""
         self.connection = connection
         self.cursor = None
 
     def __enter__(self):
-        """
-        Enter context and begin transaction
-        """
+        """Begin a transaction and return a cursor."""
         self.cursor = self.connection.cursor()
         self.cursor.execute("BEGIN")
         return self.cursor
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """
-        Exit context and commit or rollback transaction
-        """
+        """Commit on success, rollback on error, then close cursor."""
         try:
             if exc_type is None:
                 self.connection.commit()

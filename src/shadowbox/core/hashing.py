@@ -7,9 +7,6 @@ from pathlib import Path
 CHUNK_SIZE = 65536  # 64KB
 
 def calculate_sha256(file_path: Path) -> str:
-    
-    # Calculates the SHA-256 hash of a file.
-
     sha256 = hashlib.sha256()
     with open(file_path, 'rb') as f:
         while True:
@@ -17,4 +14,9 @@ def calculate_sha256(file_path: Path) -> str:
             if not data:
                 break
             sha256.update(data)
+    return sha256.hexdigest()
+
+def calculate_sha256_bytes(data: bytes) -> str:
+    sha256 = hashlib.sha256()
+    sha256.update(data)
     return sha256.hexdigest()

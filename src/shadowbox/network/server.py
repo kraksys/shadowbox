@@ -38,7 +38,7 @@ import sys
 import argparse
 from zeroconf import Zeroconf, ServiceInfo
 
-from .adapter import init_env, format_list, open_for_get, finalize_put, delete_filename 
+from .adapter import init_env, format_list, open_for_get, finalize_put, delete_filename, select_box 
 
 SERVICE_TYPE = "_shadowbox._tcp.local."
 file_locks = {}
@@ -119,6 +119,21 @@ def handle_client(conn, addr, context):
                 conn.sendall(response.encode())
                 print("Sent file list (core mode)")
 
+        elif line.upper().startswith("BOX "):
+            if context["mode"] == "test":
+                conn.sendall(b"ERROR: BOX unsupported in test mode\n")
+            else:
+                _, box_name = line.split(" ", 1)
+                env = context["env"]
+                try:
+                    box = select_box(env, box_name)
+                    msg = f"OK: Selected box '{box_name}' ({box['box_id']})\n"
+                    conn.sendall(msg.encode())
+                    print(f"Selected box {box_name} -> {box['box_id']}")
+                except Exception as e:
+                    msg = f"ERROR: Could not select box: {e}\n"
+                    conn.sendall(msg.encode())
+        
         elif line.upper().startswith("GET "):
             # TODO: it needs to be able to get files from inside other directories and create the given directory
             # I am not doing this before I talk with the db team about how to mange this
