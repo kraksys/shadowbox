@@ -1,8 +1,17 @@
 """
 Base data models for Metadata and core file operations
+
+Using slots as it makes our data objects more efficient:
+https://wiki.python.org/moin/UsingSlots
+
+What is this ?
+- A file where definitions, and capabilities of used objects are found
+- This is the FS scoped object model definition, it differs from the DB by relaying access to actual file-system objects and not DB records
+- Anything you access from here is for an actual file object and everything you access from DB is for a *record related to* a file object
 """
 
 from datetime import datetime
+import json
 from enum import Enum
 from pathlib import Path
 from typing import Optional, List, Dict, Any
@@ -27,33 +36,63 @@ class FileStatus(Enum):
     ARCHIVED = "archived"
     CORRUPTED = "corrupted"
 
-class FileMetadata: 
+
+class BoxStatus(Enum):
+    PRIVATE = "private"
+    SHARED = "shared"
+    PUBLIC = "public"
+
+
+class FileMetadata:
     __slots__ = (
-        'file_id',
-        'filename',
-        'original_path',
-        'size',
-        'file_type',
-        'mime_type',
-        'hash_sha256',
-        'created_at',
-        'modified_at',
-        'accessed_at',
-        'user_id',
-        'owner',
-        'status',
-        'version',
-        'parent_version_id',
-        'tags',
-        'description',
-        'custom_metadata'
+        "file_id",
+        "box_id",
+        "filename",
+        "original_path",
+        "size",
+        "file_type",
+        "mime_type",
+        "hash_sha256",
+        "created_at",
+        "modified_at",
+        "accessed_at",
+        "user_id",
+        "owner",
+        "status",
+        "version",
+        "parent_version_id",
+        "tags",
+        "description",
+        "custom_metadata",
     )
-    
-    def __init__(self, file_id=None, filename="", original_path="", size=0, file_type=None, mime_type=None, hash_sha256=None, created_at=None, modified_at=None, accessed_at=None, user_id="", owner="", status=None, version=1, parent_version_id=None, tags=None, description=None, custom_metadata=None):
+
+    def __init__(
+        self,
+        file_id=None,
+        box_id=None,
+        filename="",
+        original_path="",
+        size=0,
+        file_type=None,
+        mime_type=None,
+        hash_sha256=None,
+        created_at=None,
+        modified_at=None,
+        accessed_at=None,
+        user_id="",
+        owner="",
+        status=None,
+        version=1,
+        parent_version_id=None,
+        tags=None,
+        description=None,
+        custom_metadata=None,
+    ):
         """
-            Initialize file metadata
+        Initialize file metadata
         """
         self.file_id = file_id if file_id is not None else str(uuid.uuid4())
+        self.box_id = box_id
         self.filename = filename
         self.original_path = original_path
         self.size = size
@@ -73,39 +112,40 @@ class FileMetadata:
         self.custom_metadata = custom_metadata if custom_metadata is not None else {}
 
     def to_dict(self):
-          """
-             Convert metadata to dict
-          """
-          return {
-              'file_id': self.file_id,
-              'filename': self.filename,
-              'original_path': self.original_path,
-              'size': self.size,
-              'file_type': self.file_type.value,
-              'mime_type': self.mime_type,
-              'hash_sha256': self.hash_sha256,
-              'created_at': self.created_at.isoformat(),
-              'modified_at': self.modified_at.isoformat(),
-              'accessed_at': self.accessed_at.isoformat(),
-              'user_id': self.user_id,
-              'owner': self.owner,
-              'status': self.status.value,
-              'version': self.version,
-              'parent_version_id': self.parent_version_id,
-              'tags': self.tags,
-              'description': self.description,
-              'custom_metadata': self.custom_metadata,
-          }
+        """
+        Convert metadata to dict
+        """
+        return {
+            "file_id": self.file_id,
+            "box_id": self.box_id,
+            "filename": self.filename,
+            "original_path": self.original_path,
+            "size": self.size,
+            "file_type": self.file_type.value,
+            "mime_type": self.mime_type,
+            "hash_sha256": self.hash_sha256,
+            "created_at": self.created_at.isoformat(),
+            "modified_at": self.modified_at.isoformat(),
+            "accessed_at": self.accessed_at.isoformat(),
+            "user_id": self.user_id,
+            "owner": self.owner,
+            "status": self.status.value,
+            "version": self.version,
+            "parent_version_id": self.parent_version_id,
+            "tags": self.tags,
+            "description": self.description,
+            "custom_metadata": self.custom_metadata,
+        }
 
     def __repr__(self):
         """
-            String representation 
+        String representation
         """
         return f"FileMetadata(file_id={self.file_id!r}, filename={self.filename!r})"
 
     def __eq__(self, other):
         """
-            Equality comparison 
+        Equality comparison
         """
         if not isinstance(other, FileMetadata):
             return NotImplemented
@@ -113,169 +153,323 @@ class FileMetadata:
 
     def __hash__(self):
         """
-            Hash for use in dicts
+        Hash for use in dicts
         """
         return hash(self.file_id)
 
-    
     def create_metadata_from_dict(data):
         """
-            Create file metadata from dict 
+        Create file metadata from dict
         """
-        file_type_val = data.get('file_type', 'other')
-        file_type = FileType(file_type_val) if isinstance(file_type_val, str) else file_type_val 
-        
-        status_val = data.get('status', 'active') 
-        status = FileStatus(status_val) if isinstance(status_val, str) else status_val 
+        file_type_val = data.get("file_type", "other")
+        file_type = (
+            FileType(file_type_val) if isinstance(file_type_val, str) else file_type_val
+        )
 
-        created_at = None 
-        if 'created_at' in data: 
-            created_at = datetime.fromisoformat(data['created_at']) if isinstance(data['created_at'], str) else data['created_at']
+        status_val = data.get("status", "active")
+        status = FileStatus(status_val) if isinstance(status_val, str) else status_val
 
-        modified_at = None 
-        if 'modified_at' in data: 
-            modified_at = datetime.fromisoformat(data['modified_at']) if isinstance(data['modified_at'], str) else data['modified_at'] 
+        created_at = None
+        if "created_at" in data:
+            created_at = (
+                datetime.fromisoformat(data["created_at"])
+                if isinstance(data["created_at"], str)
+                else data["created_at"]
+            )
 
-        accessed_at = None 
-        if 'accessed_at' in data: 
-            accessed_at = datetime.fromisoformat(data['accessed_at']) if isinstance(data['accessed_at'], str) else data['accessed_at']
+        modified_at = None
+        if "modified_at" in data:
+            modified_at = (
+                datetime.fromisoformat(data["modified_at"])
+                if isinstance(data["modified_at"], str)
+                else data["modified_at"]
+            )
+
+        accessed_at = None
+        if "accessed_at" in data:
+            accessed_at = (
+                datetime.fromisoformat(data["accessed_at"])
+                if isinstance(data["accessed_at"], str)
+                else data["accessed_at"]
+            )
 
         return FileMetadata(
-          file_id=data.get('file_id'),
-          filename=data.get('filename', ''),
-          original_path=data.get('original_path', ''),
-          size=data.get('size', 0),
-          file_type=file_type,
-          mime_type=data.get('mime_type'),
-          hash_sha256=data.get('hash_sha256'),
-          created_at=created_at,
-          modified_at=modified_at,
-          accessed_at=accessed_at,
-          user_id=data.get('user_id', ''),
-          owner=data.get('owner', ''),
-          status=status,
-          version=data.get('version', 1),
-          parent_version_id=data.get('parent_version_id'),
-          tags=data.get('tags', []),
-          description=data.get('description'),
-          custom_metadata=data.get('custom_metadata', {}),
-      )
+            file_id=data.get("file_id"),
+            box_id=data.get("box_id"),
+            filename=data.get("filename", ""),
+            original_path=data.get("original_path", ""),
+            size=data.get("size", 0),
+            file_type=file_type,
+            mime_type=data.get("mime_type"),
+            hash_sha256=data.get("hash_sha256"),
+            created_at=created_at,
+            modified_at=modified_at,
+            accessed_at=accessed_at,
+            user_id=data.get("user_id", ""),
+            owner=data.get("owner", ""),
+            status=status,
+            version=data.get("version", 1),
+            parent_version_id=data.get("parent_version_id"),
+            tags=data.get("tags", []),
+            description=data.get("description"),
+            custom_metadata=data.get("custom_metadata", {}),
+        )
+
 
 class UserDirectory:
     """
-        Represents a user's directory structure
+    Represents a user's directory structure
     """
 
-    __slots__ = ('user_id', 'username', 'root_path', 'created_at', 'quota_bytes', 'used_bytes')
+    __slots__ = (
+        "user_id",
+        "username",
+        "root_path",
+        "created_at",
+        "quota_bytes",
+        "used_bytes",
+    )
 
-    def __init__(self,user_id,username,root_path,created_at=None,quota_bytes=10 * 1024 * 1024 * 1024,used_bytes=0):
-          """
-              Initialize UserDirectory
-          """
-          self.user_id = user_id
-          self.username = username
-          self.root_path = root_path
-          self.created_at = created_at if created_at is not None else datetime.utcnow()
-          self.quota_bytes = quota_bytes
-          self.used_bytes = used_bytes
+    def __init__(
+        self,
+        user_id,
+        username,
+        root_path,
+        created_at=None,
+        quota_bytes=10 * 1024 * 1024 * 1024,
+        used_bytes=0,
+    ):
+        """
+        Initialize UserDirectory
+        """
+        self.user_id = user_id
+        self.username = username
+        self.root_path = root_path
+        self.created_at = created_at if created_at is not None else datetime.utcnow()
+        self.quota_bytes = quota_bytes
+        self.used_bytes = used_bytes
 
     def get_quota_remaining(self):
-          """
-              Calculate remaining quota bytes 
-          """
-          return max(0, self.quota_bytes - self.used_bytes)
+        """
+        Calculate remaining quota bytes
+        """
+        return max(0, self.quota_bytes - self.used_bytes)
 
     def get_quota_percentage(self):
-          """
-              Calculate quota usage percentage
-          """
-          if self.quota_bytes == 0:
-              return 100.0
-          return (self.used_bytes / self.quota_bytes) * 100
-
-    def to_dict(self):
-          """
-              Convert to dictionary
-          """
-          return {
-              'user_id': self.user_id,
-              'username': self.username,
-              'root_path': str(self.root_path),
-              'created_at': self.created_at.isoformat(),
-              'quota_bytes': self.quota_bytes,
-              'used_bytes': self.used_bytes,
-          }
-
-    def __repr__(self):
-          """String representation."""
-          return f"UserDirectory(user_id={self.user_id!r}, username={self.username!r})"
-
-
-class Snapshot:
-    """
-        Represents an immutable file snapshot
-    """
-
-    __slots__ = ('snapshot_id', 'file_id', 'user_id', 'version','hash_sha256', 'size', 'created_at', 'description','metadata')
-
-    def __init__(self,snapshot_id,file_id,user_id,version,hash_sha256,size,created_at=None,description=None,metadata=None):
         """
-            Initialize Snapshot
+        Calculate quota usage percentage
         """
-        self.snapshot_id = snapshot_id
-        self.file_id = file_id
-        self.user_id = user_id
-        self.version = version
-        self.hash_sha256 = hash_sha256
-        self.size = size
-        self.created_at = created_at if created_at is not None else datetime.utcnow()
-        self.description = description
-        self.metadata = metadata
+        if self.quota_bytes == 0:
+            return 100.0
+        return (self.used_bytes / self.quota_bytes) * 100
 
     def to_dict(self):
         """
-            Convert snapshot to dict
+        Convert to dictionary
         """
         return {
-            'snapshot_id': self.snapshot_id,
-            'file_id': self.file_id,
-            'user_id': self.user_id,
-            'version': self.version,
-            'hash_sha256': self.hash_sha256,
-            'size': self.size,
-            'created_at': self.created_at.isoformat(),
-            'description': self.description,
-            'metadata': self.metadata,
+            "user_id": self.user_id,
+            "username": self.username,
+            "root_path": str(self.root_path),
+            "created_at": self.created_at.isoformat(),
+            "quota_bytes": self.quota_bytes,
+            "used_bytes": self.used_bytes,
         }
 
+    def __repr__(self):
+        """String representation."""
+        return f"UserDirectory(user_id={self.user_id!r}, username={self.username!r})"
 
-def create_snapshot_from_dict(data):
-    """
-        Create snapshot from dictionary
-    """
-    created_at = None
-    if 'created_at' in data:
-        created_at = datetime.fromisoformat(data['created_at']) if isinstance(data['created_at'], str) else data['created_at']
 
-    return Snapshot(
-        snapshot_id=data['snapshot_id'],
-        file_id=data['file_id'],
-        user_id=data['user_id'],
-        version=data['version'],
-        hash_sha256=data['hash_sha256'],
-        size=data['size'],
-        created_at=created_at,
-        description=data.get('description'),
-        metadata=data.get('metadata'),
+class Box:
+    """
+    Represents an isolated container for data storage & sharing
+    """
+
+    __slots__ = (
+        "box_id",
+        "user_id",
+        "box_name",
+        "description",
+        "created_at",
+        "updated_at",
+        "is_shared",
+        "share_token",
+        "settings",
     )
+
+    def __init__(
+        self,
+        box_id=None,
+        user_id="",
+        box_name="",
+        description=None,
+        created_at=None,
+        updated_at=None,
+        is_shared=False,
+        share_token=None,
+        settings=None,
+    ):
+        """
+        Initialize Box
+        """
+        self.box_id = box_id if box_id is not None else str(uuid.uuid4())
+        self.user_id = user_id
+        self.box_name = box_name
+        self.description = description
+        # Normalize datetime fields that may come as ISO strings from DB
+        if created_at is None:
+            self.created_at = datetime.utcnow()
+        elif isinstance(created_at, str):
+            try:
+                self.created_at = datetime.fromisoformat(created_at)
+            except Exception:
+                self.created_at = datetime.utcnow()
+        else:
+            self.created_at = created_at
+
+        if updated_at is None:
+            self.updated_at = datetime.utcnow()
+        elif isinstance(updated_at, str):
+            try:
+                self.updated_at = datetime.fromisoformat(updated_at)
+            except Exception:
+                self.updated_at = datetime.utcnow()
+        else:
+            self.updated_at = updated_at
+
+        # SQLite booleans may be 0/1 integers
+        self.is_shared = bool(is_shared)
+        self.share_token = share_token if share_token is not None else str(uuid.uuid4())
+        # Settings may be JSON string from DB
+        if settings is None:
+            self.settings = {}
+        elif isinstance(settings, str):
+            try:
+                self.settings = json.loads(settings)
+            except Exception:
+                self.settings = {}
+        else:
+            self.settings = settings
+
+    def to_dict(self):
+        """
+        Convert to dictionary
+        """
+        return {
+            "box_id": self.box_id,
+            "user_id": self.user_id,
+            "box_name": self.box_name,
+            "description": self.description,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat(),
+            "is_shared": self.is_shared,
+            "share_token": self.share_token,
+            "settings": self.settings,
+        }
+
+    def __repr__(self):
+        return f"Box(box_id={self.box_id!r}, box_name={self.box_name!r}, user_id={self.user_id!r})"
+
+
+class BoxShare:
+    """
+    A box share permission
+    """
+
+    __slots__ = (
+        "share_id",
+        "box_id",
+        "shared_by_user_id",
+        "shared_with_user_id",
+        "permission_level",
+        "created_at",
+        "expires_at",
+        "access_token",
+    )
+
+    def __init__(
+        self,
+        share_id=None,
+        box_id="",
+        shared_by_user_id="",
+        shared_with_user_id="",
+        permission_level="read",
+        created_at=None,
+        expires_at=None,
+        access_token=None,
+    ):
+        """
+        Init BoxShare
+        """
+        self.share_id = share_id if share_id is not None else str(uuid.uuid4())
+        self.box_id = box_id
+        self.shared_by_user_id = shared_by_user_id
+        self.shared_with_user_id = shared_with_user_id
+        self.permission_level = permission_level
+        # Normalize date fields from DB strings
+        if created_at is None:
+            self.created_at = datetime.utcnow()
+        elif isinstance(created_at, str):
+            try:
+                self.created_at = datetime.fromisoformat(created_at)
+            except Exception:
+                self.created_at = datetime.utcnow()
+        else:
+            self.created_at = created_at
+
+        if isinstance(expires_at, str):
+            try:
+                self.expires_at = datetime.fromisoformat(expires_at)
+            except Exception:
+                self.expires_at = None
+        else:
+            self.expires_at = expires_at
+
+        self.access_token = (
+            access_token if access_token is not None else str(uuid.uuid4())
+        )
+
+    def to_dict(self):
+        """
+        Convert to dictionary
+        """
+        return {
+            "share_id": self.share_id,
+            "box_id": self.box_id,
+            "shared_by_user_id": self.shared_by_user_id,
+            "permission_level": self.permission_level,
+            "created_at": self.created_at.isoformat(),
+            "expires_at": self.expires_at.isoformat() if self.expires_at else None,
+            "access_token": self.access_token,
+        }
+
+    def is_expired(self):
+        """
+        Check if the share has expired
+        """
+        if self.expires_at is None:
+            return False
+        return datetime.utcnow() > self.expires_at
 
 
 class FileVersion:
     """
-        Represents a specific version of a file
+    Represents a specific version of a file
     """
 
-    __slots__ = ('version_id', 'file_id', 'version_number', 'hash_sha256','size', 'created_at', 'created_by', 'change_description','parent_version_id', 'snapshot_id')
+    __slots__ = (
+        "version_id",
+        "file_id",
+        "version_number",
+        "hash_sha256",
+        "size",
+        "created_at",
+        "created_by",
+        "change_description",
+        "parent_version_id",
+        "snapshot_id",
+    )
 
     def __init__(
         self,
@@ -288,10 +482,10 @@ class FileVersion:
         created_by,
         change_description=None,
         parent_version_id=None,
-        snapshot_id=None
+        snapshot_id=None,
     ):
         """
-            Initialize FileVersion
+        Initialize FileVersion
         """
         self.version_id = version_id
         self.file_id = file_id
@@ -306,52 +500,71 @@ class FileVersion:
 
     def to_dict(self):
         """
-            Convert to dict
+        Convert to dict
         """
         return {
-            'version_id': self.version_id,
-            'file_id': self.file_id,
-            'version_number': self.version_number,
-            'hash_sha256': self.hash_sha256,
-            'size': self.size,
-            'created_at': self.created_at.isoformat(),
-            'created_by': self.created_by,
-            'change_description': self.change_description,
-            'parent_version_id': self.parent_version_id,
-            'snapshot_id': self.snapshot_id,
+            "version_id": self.version_id,
+            "file_id": self.file_id,
+            "version_number": self.version_number,
+            "hash_sha256": self.hash_sha256,
+            "size": self.size,
+            "created_at": self.created_at.isoformat(),
+            "created_by": self.created_by,
+            "change_description": self.change_description,
+            "parent_version_id": self.parent_version_id,
+            "snapshot_id": self.snapshot_id,
         }
 
 
 def create_version_from_dict(data):
     """
-        Create FileVersion from dictionary
+    Create FileVersion from dictionary
     """
-    created_at = datetime.fromisoformat(data['created_at']) if isinstance(data['created_at'], str) else data['created_at']
+    created_at = (
+        datetime.fromisoformat(data["created_at"])
+        if isinstance(data["created_at"], str)
+        else data["created_at"]
+    )
 
     return FileVersion(
-        version_id=data['version_id'],
-        file_id=data['file_id'],
-        version_number=data['version_number'],
-        hash_sha256=data['hash_sha256'],
-        size=data['size'],
+        version_id=data["version_id"],
+        file_id=data["file_id"],
+        version_number=data["version_number"],
+        hash_sha256=data["hash_sha256"],
+        size=data["size"],
         created_at=created_at,
-        created_by=data['created_by'],
-        change_description=data.get('change_description'),
-        parent_version_id=data.get('parent_version_id'),
-        snapshot_id=data.get('snapshot_id'),
+        created_by=data["created_by"],
+        change_description=data.get("change_description"),
+        parent_version_id=data.get("parent_version_id"),
+        snapshot_id=data.get("snapshot_id"),
     )
 
 
 class DuplicateGroup:
     """
-        Represents a group of duplicate files
+    Represents a group of duplicate files
     """
 
-    __slots__ = ('hash_sha256', 'file_count', 'total_size','potential_savings', 'file_ids', 'file_paths')
+    __slots__ = (
+        "hash_sha256",
+        "file_count",
+        "total_size",
+        "potential_savings",
+        "file_ids",
+        "file_paths",
+    )
 
-    def __init__(self, hash_sha256, file_count, total_size, potential_savings, file_ids, file_paths):
+    def __init__(
+        self,
+        hash_sha256,
+        file_count,
+        total_size,
+        potential_savings,
+        file_ids,
+        file_paths,
+    ):
         """
-            Initialize DuplicateGroup
+        Initialize DuplicateGroup
         """
         self.hash_sha256 = hash_sha256
         self.file_count = file_count
@@ -362,28 +575,28 @@ class DuplicateGroup:
 
     def to_dict(self):
         """
-            Convert to dictionary
+        Convert to dictionary
         """
         return {
-            'hash': self.hash_sha256,
-            'file_count': self.file_count,
-            'total_size': self.total_size,
-            'potential_savings': self.potential_savings,
-            'file_ids': self.file_ids,
-            'file_paths': [str(p) for p in self.file_paths],
+            "hash": self.hash_sha256,
+            "file_count": self.file_count,
+            "total_size": self.total_size,
+            "potential_savings": self.potential_savings,
+            "file_ids": self.file_ids,
+            "file_paths": [str(p) for p in self.file_paths],
         }
 
 
 class SearchResult:
     """
-        Represents a search result with relevance score
+    Represents a search result with relevance score
     """
 
-    __slots__ = ('file_metadata', 'relevance_score', 'matched_fields', 'snippet')
+    __slots__ = ("file_metadata", "relevance_score", "matched_fields", "snippet")
 
     def __init__(self, file_metadata, relevance_score, matched_fields, snippet=None):
         """
-            Initialize SearchResult
+        Initialize SearchResult
         """
         self.file_metadata = file_metadata
         self.relevance_score = relevance_score
@@ -392,11 +605,11 @@ class SearchResult:
 
     def to_dict(self):
         """
-            Convert to dictionary
+        Convert to dictionary
         """
         return {
-            'file_metadata': self.file_metadata.to_dict(),
-            'relevance_score': self.relevance_score,
-            'matched_fields': self.matched_fields,
-            'snippet': self.snippet,
+            "file_metadata": self.file_metadata.to_dict(),
+            "relevance_score": self.relevance_score,
+            "matched_fields": self.matched_fields,
+            "snippet": self.snippet,
         }
