@@ -2,7 +2,7 @@
 
 import hashlib
 
-from shadowbox.security import hashing
+from shadowbox.core import hashing
 
 # import io
 # from pathlib import Path
