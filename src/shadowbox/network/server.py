@@ -373,18 +373,18 @@ def handle_client(conn, addr, context):
             else:
                 conn.sendall(b"ERROR: Command only available in core mode\n")
 
-        # elif line.upper() == "LIST_AVAILABLE_USERS":
-        #     if context["mode"] == "core":
-        #         response = list_available_users(context["env"])
-        #         conn.sendall(response.encode())
-        #     else:
-        #         conn.sendall(b"ERROR: Command only available in core mode\n")
-        # elif line.upper() == "LIST_SHARED_BOXES":
-        #     if context["mode"] == "core":
-        #         response = list_shared_with_user(context["env"])
-        #         conn.sendall(response.encode())
-        #     else:
-        #         conn.sendall(b"ERROR: Command only available in core mode\n")
+        elif line.upper() == "LIST_AVAILABLE_USERS":
+            if context["mode"] == "core":
+                response = list_available_users(context["env"])
+                conn.sendall(response.encode())
+            else:
+                conn.sendall(b"ERROR: Command only available in core mode\n")
+        elif line.upper() == "LIST_SHARED_BOXES":
+            if context["mode"] == "core":
+                response = list_shared_with_user(context["env"])
+                conn.sendall(response.encode())
+            else:
+                conn.sendall(b"ERROR: Command only available in core mode\n")
         else:
             msg = "ERROR - Unknown command\n"
             conn.sendall(msg.encode())
