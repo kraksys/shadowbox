@@ -284,15 +284,15 @@ def cmd_share_box(ip, port, args):
     print(res.get("text", res.get("error")).strip())
 
 
-# def cmd_list_available_users(ip, port):
-#     """Sends the LIST_AVAILABLE_USERS command to the server."""
-#     res = connect_and_request(ip, port, "LIST_AVAILABLE_USERS")
-#     print(res.get("text", res.get("error")).strip())
-#
-# def cmd_list_shared_boxes(ip, port):
-#     """Sends the LIST_SHARED_BOXES command to the server."""
-#     res = connect_and_request(ip, port, "LIST_SHARED_BOXES")
-#     print(res.get("text", res.get("error")).strip())
+def cmd_list_available_users(ip, port):
+    """Sends the LIST_AVAILABLE_USERS command to the server."""
+    res = connect_and_request(ip, port, "LIST_AVAILABLE_USERS")
+    print(res.get("text", res.get("error")).strip())
+
+def cmd_list_shared_boxes(ip, port):
+    """Sends the LIST_SHARED_BOXES command to the server."""
+    res = connect_and_request(ip, port, "LIST_SHARED_BOXES")
+    print(res.get("text", res.get("error")).strip())
 
 def cmd_box(ip, port, namespaced_box):
     """Sends the BOX command to select a box using the 'owner/box_name' format."""
@@ -350,10 +350,10 @@ def main(argv):
             cmd_list_boxes(ip, port)
         elif cmd == "SHARE_BOX":
             cmd_share_box(ip, port, args)
-        # elif cmd == "LIST_AVAILABLE_USERS":
-        #     cmd_list_available_users(ip, port)
-        # elif cmd == "LIST_SHARED_BOXES":
-        #     cmd_list_shared_boxes(ip, port)
+        elif cmd == "LIST_AVAILABLE_USERS":
+            cmd_list_available_users(ip, port)
+        elif cmd == "LIST_SHARED_BOXES":
+            cmd_list_shared_boxes(ip, port)
         elif cmd == "BOX":
             if not args:
                 print("Usage: python client.py BOX <owner_username/box_name>")
