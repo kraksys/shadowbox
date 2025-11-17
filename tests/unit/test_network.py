@@ -120,3 +120,30 @@ def test_connect_and_request_requires_out_path(monkeypatch: pytest.MonkeyPatch) 
 
     with pytest.raises(ValueError):
         client.connect_and_request("10.0.0.1", 9000, "GET missing", recv_file=True)
+
+
+def test_connect_and_request_missing_file_returns_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Return an error mapping when the server reports a missing file."""
+    expected_chunks = [b"ERROR: File not found: missing\n", b""]
+    fake_socket = FakeSocket(expected_chunks)
+
+    def fake_create_connection(
+        address: Tuple[str, int], timeout: Optional[float] = None
+    ) -> FakeSocket:
+        return fake_socket
+
+    monkeypatch.setattr("shadowbox.network.client.socket.create_connection", fake_create_connection)
+
+    out_path = tmp_path / "missing.txt"
+    result = client.connect_and_request(
+        "10.0.0.2",
+        8000,
+        "GET missing",
+        recv_file=True,
+        out_path=out_path,
+    )
+
+    assert result == {"status": "error", "error": f"File not found: {out_path}"}
+    assert out_path.read_bytes() == b""
