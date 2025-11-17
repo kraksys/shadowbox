@@ -13,6 +13,9 @@ Usage:
   python zeroconf_client.py GET <filename>
   python zeroconf_client.py PUT <local_path> [remote_name]
   python zeroconf_client.py DELETE <filename>
+  LIST_BOXES       -> list available boxes for the user
+  SHARE_BOX <box_name> <username> [perm] -> share a box
+  LIST_AVAILABLE_USERS -> list users available for sharing
 
 If no arguments given, defaults to LIST.
 [still not finished]
@@ -259,6 +262,33 @@ def cmd_delete(ip, port, filename, timeout=30):
     return res
 
 
+def cmd_list_boxes(ip, port):
+    """Sends the LIST_BOXES command to the server."""
+    res = connect_and_request(ip, port, "LIST_BOXES")
+    print(res.get("text", res.get("error")).strip())
+
+#
+# def cmd_share_box(ip, port, args):
+#     """Sends the SHARE_BOX command to the server."""
+#     if len(args) < 2:
+#         print("Usage: client.py SHARE_BOX <box_name> <username> [permission]")
+#         return
+#
+#     box_name, share_with_user = args[0], args[1]
+#     permission = args[2] if len(args) > 2 else "read"
+#
+#     request_line = f"SHARE_BOX {box_name} {share_with_user} {permission}"
+#     res = connect_and_request(ip, port, request_line)
+#     print(res.get("text", res.get("error")).strip())
+#
+#
+# def cmd_list_available_users(ip, port):
+#     """Sends the LIST_AVAILABLE_USERS command to the server."""
+#     res = connect_and_request(ip, port, "LIST_AVAILABLE_USERS")
+#     print(res.get("text", res.get("error")).strip())
+
+
+
 def main(argv):
     if len(argv) <= 1:
         cmd = "LIST"
@@ -306,6 +336,12 @@ def main(argv):
                 return 1
             filename = args[0]
             cmd_delete(ip, port, filename)
+        elif cmd == "LIST_BOXES":
+            cmd_list_boxes(ip, port)
+        elif cmd == "SHARE_BOX":
+            cmd_share_box(ip, port, args)
+        elif cmd == "LIST_AVAILABLE_USERS":
+            cmd_list_available_users(ip, port)
         else:
             print("Unknown command:", cmd)
             return 1
