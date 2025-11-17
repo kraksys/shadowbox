@@ -334,9 +334,9 @@ def list_shared_with_user(env) -> str:
                 owner_username = owner['username']
                 permission = share['permission_level']
                 line = (
-                    f"- BOX_ID: {box['box_id']})\n"
-                    f"- {owner_username}/{box['box_name']}\n"
-                    f"  (Permission: {permission})"
+                    f"- BOX_ID: {box['box_id']}\n"
+                    f"  BOX_NAME: {owner_username}/{box['box_name']}\n"
+                    f"            (Permission: {permission})"
                 )
                 response_lines.append(line)
 
