@@ -98,3 +98,25 @@ def test_connect_and_request_receives_file(monkeypatch: pytest.MonkeyPatch, tmp_
     assert result == {"status": "ok", "saved_to": out_path}
     assert out_path.read_bytes() == b"file bytes more"
     assert fake_socket.sent_data == b"GET sample\n"
+
+
+def test_connect_and_request_requires_out_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ensure file downloads without out_path raise a clear error.
+
+    ``connect_and_request`` needs a destination path whenever ``recv_file`` is
+    True so it knows where to stream the incoming bytes. This test swaps in a
+    fake socket, calls the helper without ``out_path``, and asserts that the
+    guardrail surfaces a ``ValueError`` before any network interaction
+    proceeds.
+    """
+    fake_socket = FakeSocket([b""])
+
+    def fake_create_connection(
+        address: Tuple[str, int], timeout: Optional[float] = None
+    ) -> FakeSocket:
+        return fake_socket
+
+    monkeypatch.setattr("shadowbox.network.client.socket.create_connection", fake_create_connection)
+
+    with pytest.raises(ValueError):
+        client.connect_and_request("10.0.0.1", 9000, "GET missing", recv_file=True)
