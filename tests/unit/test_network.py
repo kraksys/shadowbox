@@ -147,3 +147,61 @@ def test_connect_and_request_missing_file_returns_error(
 
     assert result == {"status": "error", "error": f"File not found: {out_path}"}
     assert out_path.read_bytes() == b""
+
+
+def test_cmd_put_uploads_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Simulate a successful PUT upload handshake and final reply."""
+    local_path = tmp_path / "local.txt"
+    local_path.write_bytes(b"abc123")
+    fake_socket = FakeSocket([b"READY\n", b"OK: Uploaded remote.txt\n", b""])
+
+    def fake_create_connection(
+        address: Tuple[str, int], timeout: Optional[float] = None
+    ) -> FakeSocket:
+        return fake_socket
+
+    monkeypatch.setattr("shadowbox.network.client.socket.create_connection", fake_create_connection)
+
+    result = client.cmd_put("127.0.0.1", 9999, str(local_path), "remote.txt")
+
+    assert result == {"status": "ok", "reply": "OK: Uploaded remote.txt"}
+    expected_prefix = f"PUT remote.txt {local_path.stat().st_size}\n".encode()
+    assert fake_socket.sent_data.startswith(expected_prefix)
+    assert fake_socket.sent_data.endswith(b"abc123")
+
+
+def test_cmd_put_handles_server_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Stop the upload early if server responds with an error line."""
+    local_path = tmp_path / "local.txt"
+    local_path.write_text("content")
+    fake_socket = FakeSocket([b"ERROR: nope\n", b""])
+
+    def fake_create_connection(
+        address: Tuple[str, int], timeout: Optional[float] = None
+    ) -> FakeSocket:
+        return fake_socket
+
+    monkeypatch.setattr("shadowbox.network.client.socket.create_connection", fake_create_connection)
+
+    result = client.cmd_put("192.168.1.1", 9999, str(local_path), "remote.txt")
+
+    assert result == {"status": "error", "error": "ERROR: nope"}
+    assert fake_socket.sent_data.startswith(b"PUT remote.txt")
+    # No file bytes should be sent when READY is never received.
+    assert b"content" not in fake_socket.sent_data
+
+
+def test_cmd_delete_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
+    """cmd_delete should delegate to connect_and_request with the DELETE line."""
+    calls: list[Tuple[str, int, str]] = []
+
+    def fake_connect(ip: str, port: int, line: str, timeout: int = 30) -> dict:
+        calls.append((ip, port, line))
+        return {"status": "ok", "text": "OK: Deleted file"}
+
+    monkeypatch.setattr(client, "connect_and_request", fake_connect)
+
+    result = client.cmd_delete("1.2.3.4", 7777, "file.txt")
+
+    assert result == {"status": "ok", "text": "OK: Deleted file"}
+    assert calls == [("1.2.3.4", 7777, "DELETE file.txt")]
