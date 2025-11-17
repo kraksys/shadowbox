@@ -13,9 +13,11 @@ Usage:
   python client.py GET <filename>
   python client.py PUT <local_path> [remote_name]
   python client.py DELETE <filename>
+  python client.py BOX <box_name>   -> select the active box for the current session
   python client.py LIST_BOXES       -> list available boxes for the user
   python client.py SHARE_BOX <box_name> <username> [perm] -> share a box
   python client.py LIST_AVAILABLE_USERS -> list users available for sharing
+  python client.py LIST_SHARED_BOXES  -> list boxes that have been shared with you
 
 If no arguments given, defaults to LIST.
 [still not finished]
@@ -267,7 +269,7 @@ def cmd_list_boxes(ip, port):
     res = connect_and_request(ip, port, "LIST_BOXES")
     print(res.get("text", res.get("error")).strip())
 
-#
+
 # def cmd_share_box(ip, port, args):
 #     """Sends the SHARE_BOX command to the server."""
 #     if len(args) < 2:
@@ -286,10 +288,15 @@ def cmd_list_boxes(ip, port):
 #     """Sends the LIST_AVAILABLE_USERS command to the server."""
 #     res = connect_and_request(ip, port, "LIST_AVAILABLE_USERS")
 #     print(res.get("text", res.get("error")).strip())
+#
+# def cmd_list_shared_boxes(ip, port):
+#     """Sends the LIST_SHARED_BOXES command to the server."""
+#     res = connect_and_request(ip, port, "LIST_SHARED_BOXES")
+#     print(res.get("text", res.get("error")).strip())
 
-def cmd_box(ip, port, box_name):
-    """Sends the BOX command to select a box for the current session."""
-    res = connect_and_request(ip, port, f"BOX {box_name}")
+def cmd_box(ip, port, namespaced_box):
+    """Sends the BOX command to select a box using the 'owner/box_name' format."""
+    res = connect_and_request(ip, port, f"BOX {namespaced_box}")
     print(res.get("text", res.get("error")).strip())
 
 def main(argv):
@@ -345,12 +352,16 @@ def main(argv):
         #     cmd_share_box(ip, port, args)
         # elif cmd == "LIST_AVAILABLE_USERS":
         #     cmd_list_available_users(ip, port)
+        # elif cmd == "LIST_SHARED_BOXES":
+        #     cmd_list_shared_boxes(ip, port)
         elif cmd == "BOX":
             if not args:
-                print("Usage: python client.py BOX <box_name>")
+                print("Usage: python client.py BOX <owner_username/box_name>")
+                print("Example (your own box): python client.py BOX myuser/mybox")
+                print("Example (shared box): python client.py BOX otheruser/sharedbox")
                 return 1
-            box_name = args[0]
-            cmd_box(ip, port, box_name)
+            namespaced_box = args[0]
+            cmd_box(ip, port, namespaced_box)
         else:
             print("Unknown command:", cmd)
             return 1
