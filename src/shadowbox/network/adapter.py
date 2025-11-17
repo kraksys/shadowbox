@@ -86,52 +86,52 @@ def find_by_filename(env, filename):
     return row_to_metadata(row, tags)
 
 
-# def select_box(env, namespaced_box: str) -> dict:
-#     """
-#     Selects a box using the format 'owner_username/box_name'.
-#     Verifies that the current user has at least read permission.
-#     """
-#     db = env["db"]
-#     current_user_id = env["user_id"]
-#
-#     # 1. Parse the new format
-#     if '/' not in namespaced_box:
-#         # For convenience, if no slash is provided, assume the user means their own box.
-#         owner_username = env["username"]
-#         box_name = namespaced_box
-#     else:
-#         parts = namespaced_box.split('/', 1)
-#         if len(parts) != 2:
-#             raise ValueError("Invalid box format. Use 'owner_username/box_name'.")
-#         owner_username, box_name = parts
-#
-#     # 2. Find the owner and the box
-#     um = UserModel(db)
-#     owner = um.get_by_username(owner_username)
-#     if not owner:
-#         raise UserNotFoundError(f"The box owner '{owner_username}' does not exist.")
-#
-#     owner_id = owner['user_id']
-#
-#     bm = BoxModel(db)
-#     owned_boxes = bm.list_by_user(owner_id) or []
-#     target_box = next((b for b in owned_boxes if b.get("box_name") == box_name), None)
-#
-#     if not target_box:
-#         raise BoxNotFoundError(f"Box '{box_name}' owned by '{owner_username}' not found.")
-#
-#     box_id = target_box['box_id']
-#
-#     # 3. Verify the current user has permission to access this box
-#     if not check_permission(env, box_id, "read"):
-#         raise AccessDeniedError(f"You do not have permission to access the box '{namespaced_box}'.")
-#
-#     # 4. If all checks pass, set the active box in the environment
-#     env["box_id"] = box_id
-#     # Use the actual owner's ID for ensuring the storage path exists
-#     env["storage"].ensure_box(owner_id, box_id)
-#
-#     return target_box
+def select_box(env, namespaced_box: str) -> dict:
+    """
+    Selects a box using the format 'owner_username/box_name'.
+    Verifies that the current user has at least read permission.
+    """
+    db = env["db"]
+    current_user_id = env["user_id"]
+
+    # 1. Parse the new format
+    if '/' not in namespaced_box:
+        # For convenience, if no slash is provided, assume the user means their own box.
+        owner_username = env["username"]
+        box_name = namespaced_box
+    else:
+        parts = namespaced_box.split('/', 1)
+        if len(parts) != 2:
+            raise ValueError("Invalid box format. Use 'owner_username/box_name'.")
+        owner_username, box_name = parts
+
+    # 2. Find the owner and the box
+    um = UserModel(db)
+    owner = um.get_by_username(owner_username)
+    if not owner:
+        raise UserNotFoundError(f"The box owner '{owner_username}' does not exist.")
+
+    owner_id = owner['user_id']
+
+    bm = BoxModel(db)
+    owned_boxes = bm.list_by_user(owner_id) or []
+    target_box = next((b for b in owned_boxes if b.get("box_name") == box_name), None)
+
+    if not target_box:
+        raise BoxNotFoundError(f"Box '{box_name}' owned by '{owner_username}' not found.")
+
+    box_id = target_box['box_id']
+
+    # 3. Verify the current user has permission to access this box
+    if not check_permission(env, box_id, "read"):
+        raise AccessDeniedError(f"You do not have permission to access the box '{namespaced_box}'.")
+
+    # 4. If all checks pass, set the active box in the environment
+    env["box_id"] = box_id
+    # Use the actual owner's ID for ensuring the storage path exists
+    env["storage"].ensure_box(owner_id, box_id)
+
+    return target_box
 
 
 def format_list(env):
