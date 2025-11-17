@@ -270,20 +270,20 @@ def cmd_list_boxes(ip, port):
     print(res.get("text", res.get("error")).strip())
 
 
-# def cmd_share_box(ip, port, args):
-#     """Sends the SHARE_BOX command to the server."""
-#     if len(args) < 2:
-#         print("Usage: client.py SHARE_BOX <box_name> <username> [permission]")
-#         return
-#
-#     box_name, share_with_user = args[0], args[1]
-#     permission = args[2] if len(args) > 2 else "read"
-#
-#     request_line = f"SHARE_BOX {box_name} {share_with_user} {permission}"
-#     res = connect_and_request(ip, port, request_line)
-#     print(res.get("text", res.get("error")).strip())
-#
-#
+def cmd_share_box(ip, port, args):
+    """Sends the SHARE_BOX command to the server."""
+    if len(args) < 2:
+        print("Usage: client.py SHARE_BOX <box_name> <username> [permission]")
+        return
+
+    box_name, share_with_user = args[0], args[1]
+    permission = args[2] if len(args) > 2 else "read"
+
+    request_line = f"SHARE_BOX {box_name} {share_with_user} {permission}"
+    res = connect_and_request(ip, port, request_line)
+    print(res.get("text", res.get("error")).strip())
+
+
 # def cmd_list_available_users(ip, port):
 #     """Sends the LIST_AVAILABLE_USERS command to the server."""
 #     res = connect_and_request(ip, port, "LIST_AVAILABLE_USERS")
@@ -348,8 +348,8 @@ def main(argv):
             cmd_delete(ip, port, filename)
         elif cmd == "LIST_BOXES":
             cmd_list_boxes(ip, port)
-        # elif cmd == "SHARE_BOX":
-        #     cmd_share_box(ip, port, args)
+        elif cmd == "SHARE_BOX":
+            cmd_share_box(ip, port, args)
         # elif cmd == "LIST_AVAILABLE_USERS":
         #     cmd_list_available_users(ip, port)
         # elif cmd == "LIST_SHARED_BOXES":
