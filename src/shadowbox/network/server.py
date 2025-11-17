@@ -47,7 +47,7 @@ import sys
 import argparse
 from zeroconf import Zeroconf, ServiceInfo
 
-from .adapter import init_env, format_list, open_for_get, finalize_put, delete_filename, select_box, list_boxes, share_box, list_available_users
+from .adapter import init_env, format_list, open_for_get, finalize_put, delete_filename, select_box, list_boxes, share_box, list_available_users, list_shared_with_user
 
 SERVICE_TYPE = "_shadowbox._tcp.local."
 file_locks = {}
@@ -358,28 +358,33 @@ def handle_client(conn, addr, context):
                 conn.sendall(response.encode())
             else:
                 conn.sendall(b"ERROR: Command only available in core mode\n")
-        #
-        # elif line.upper().startswith("SHARE_BOX "):
-        #     if context["mode"] == "core":
-        #         parts = line.strip().split(" ", 3)
-        #         if len(parts) < 3:
-        #             conn.sendall(b"ERROR: SHARE_BOX requires <box_name> and <share_with_username>\n")
-        #         else:
-        #             box_name = parts[1]
-        #             share_with_user = parts[2]
-        #             permission = parts[3] if len(parts) > 3 else "read"
-        #             response = share_box(context["env"], box_name, share_with_user, permission)
-        #             conn.sendall(response.encode())
-        #     else:
-        #         conn.sendall(b"ERROR: Command only available in core mode\n")
-        #
+
+        elif line.upper().startswith("SHARE_BOX "):
+            if context["mode"] == "core":
+                parts = line.strip().split(" ", 3)
+                if len(parts) < 3:
+                    conn.sendall(b"ERROR: SHARE_BOX requires <box_name> and <share_with_username>\n")
+                else:
+                    box_name = parts[1]
+                    share_with_user = parts[2]
+                    permission = parts[3] if len(parts) > 3 else "read"
+                    response = share_box(context["env"], box_name, share_with_user, permission)
+                    conn.sendall(response.encode())
+            else:
+                conn.sendall(b"ERROR: Command only available in core mode\n")
+
         # elif line.upper() == "LIST_AVAILABLE_USERS":
         #     if context["mode"] == "core":
         #         response = list_available_users(context["env"])
         #         conn.sendall(response.encode())
         #     else:
         #         conn.sendall(b"ERROR: Command only available in core mode\n")
-
+        # elif line.upper() == "LIST_SHARED_BOXES":
+        #     if context["mode"] == "core":
+        #         response = list_shared_with_user(context["env"])
+        #         conn.sendall(response.encode())
+        #     else:
+        #         conn.sendall(b"ERROR: Command only available in core mode\n")
         else:
             msg = "ERROR - Unknown command\n"
             conn.sendall(msg.encode())
