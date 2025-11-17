@@ -9,13 +9,13 @@ Commands:
   DELETE <filename> -> delete remote file
 
 Usage:
-  python zeroconf_client.py [LIST]
-  python zeroconf_client.py GET <filename>
-  python zeroconf_client.py PUT <local_path> [remote_name]
-  python zeroconf_client.py DELETE <filename>
-  LIST_BOXES       -> list available boxes for the user
-  SHARE_BOX <box_name> <username> [perm] -> share a box
-  LIST_AVAILABLE_USERS -> list users available for sharing
+  python client.py [LIST]
+  python client.py GET <filename>
+  python client.py PUT <local_path> [remote_name]
+  python client.py DELETE <filename>
+  python client.py LIST_BOXES       -> list available boxes for the user
+  python client.py SHARE_BOX <box_name> <username> [perm] -> share a box
+  python client.py LIST_AVAILABLE_USERS -> list users available for sharing
 
 If no arguments given, defaults to LIST.
 [still not finished]
@@ -287,7 +287,10 @@ def cmd_list_boxes(ip, port):
 #     res = connect_and_request(ip, port, "LIST_AVAILABLE_USERS")
 #     print(res.get("text", res.get("error")).strip())
 
-
+def cmd_box(ip, port, box_name):
+    """Sends the BOX command to select a box for the current session."""
+    res = connect_and_request(ip, port, f"BOX {box_name}")
+    print(res.get("text", res.get("error")).strip())
 
 def main(argv):
     if len(argv) <= 1:
@@ -338,10 +341,16 @@ def main(argv):
             cmd_delete(ip, port, filename)
         elif cmd == "LIST_BOXES":
             cmd_list_boxes(ip, port)
-        elif cmd == "SHARE_BOX":
-            cmd_share_box(ip, port, args)
-        elif cmd == "LIST_AVAILABLE_USERS":
-            cmd_list_available_users(ip, port)
+        # elif cmd == "SHARE_BOX":
+        #     cmd_share_box(ip, port, args)
+        # elif cmd == "LIST_AVAILABLE_USERS":
+        #     cmd_list_available_users(ip, port)
+        elif cmd == "BOX":
+            if not args:
+                print("Usage: python client.py BOX <box_name>")
+                return 1
+            box_name = args[0]
+            cmd_box(ip, port, box_name)
         else:
             print("Unknown command:", cmd)
             return 1
