@@ -288,58 +288,58 @@ def share_box(env, box_name: str, share_with_username: str, permission: str) -> 
         return f"ERROR: An unexpected error occurred: {e}\n"
 
 
-# def list_available_users(env) -> str:
-#     """Lists all users available to share with."""
-#     db = env["db"]
-#     current_user_id = env["user_id"]
-#     um = UserModel(db)
-#     try:
-#         users = um.list_all()
-#         # Filter out the current user
-#         available_users = [user for user in users if user["user_id"] != current_user_id]
-#         if not available_users:
-#             return "No other users available to share with.\n"
-#
-#         response_lines = ["Available users:"]
-#         for user in available_users:
-#             response_lines.append(f"- {user['username']}")
-#
-#         return "\n".join(response_lines) + "\n"
-#     except Exception as e:
-#         return f"ERROR: Could not retrieve user list: {e}\n"
-#
-#
-# def list_shared_with_user(env) -> str:
-#     """Lists boxes that have been shared with the current user."""
-#     db = env["db"]
-#     user_id = env["user_id"]
-#     bsm = BoxShareModel(db)
-#     bm = BoxModel(db)
-#     um = UserModel(db)
-#
-#     try:
-#         # Get all share records where this user is the recipient
-#         all_shares = bsm.list_by_user(user_id)
-#         recipient_shares = [s for s in all_shares if s['shared_with_user_id'] == user_id]
-#
-#         if not recipient_shares:
-#             return "No boxes have been shared with you.\n"
-#
-#         response_lines = ["Boxes shared with you:"]
-#         for share in recipient_shares:
-#             box = bm.get(share['box_id'])
-#             owner = um.get(share['shared_by_user_id'])
-#
-#             if box and owner:
-#                 owner_username = owner['username']
-#                 permission = share['permission_level']
-#                 line = (
-#                     f"- BOX_ID: {box['box_id']})\n"
-#                     f"- {owner_username}/{box['box_name']}\n"
-#                     f"  (Permission: {permission})"
-#                 )
-#                 response_lines.append(line)
-#
-#         return "\n".join(response_lines) + "\n"
-#     except Exception as e:
-#         return f"ERROR: Could not retrieve shared boxes: {e}\n"
+def list_available_users(env) -> str:
+    """Lists all users available to share with."""
+    db = env["db"]
+    current_user_id = env["user_id"]
+    um = UserModel(db)
+    try:
+        users = um.list_all()
+        # Filter out the current user
+        available_users = [user for user in users if user["user_id"] != current_user_id]
+        if not available_users:
+            return "No other users available to share with.\n"
+
+        response_lines = ["Available users:"]
+        for user in available_users:
+            response_lines.append(f"- {user['username']}")
+
+        return "\n".join(response_lines) + "\n"
+    except Exception as e:
+        return f"ERROR: Could not retrieve user list: {e}\n"
+
+
+def list_shared_with_user(env) -> str:
+    """Lists boxes that have been shared with the current user."""
+    db = env["db"]
+    user_id = env["user_id"]
+    bsm = BoxShareModel(db)
+    bm = BoxModel(db)
+    um = UserModel(db)
+
+    try:
+        # Get all share records where this user is the recipient
+        all_shares = bsm.list_by_user(user_id)
+        recipient_shares = [s for s in all_shares if s['shared_with_user_id'] == user_id]
+
+        if not recipient_shares:
+            return "No boxes have been shared with you.\n"
+
+        response_lines = ["Boxes shared with you:"]
+        for share in recipient_shares:
+            box = bm.get(share['box_id'])
+            owner = um.get(share['shared_by_user_id'])
+
+            if box and owner:
+                owner_username = owner['username']
+                permission = share['permission_level']
+                line = (
+                    f"- BOX_ID: {box['box_id']})\n"
+                    f"- {owner_username}/{box['box_name']}\n"
+                    f"  (Permission: {permission})"
+                )
+                response_lines.append(line)
+
+        return "\n".join(response_lines) + "\n"
+    except Exception as e:
+        return f"ERROR: Could not retrieve shared boxes: {e}\n"
