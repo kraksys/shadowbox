@@ -8,6 +8,7 @@ from typing import Optional
 import getpass
 
 from shadowbox.database.connection import DatabaseConnection
+from shadowbox.database.indexing import init_fts
 from shadowbox.core.file_manager import FileManager
 from shadowbox.core.models import UserDirectory, Box
 
@@ -42,6 +43,12 @@ def build_context(
 
     db = DatabaseConnection(str(db_path))
     db.initialize()
+
+    # Ensure FTS tables/triggers exist for search flow; ignore if already present.
+    try:
+        init_fts(db)
+    except Exception:
+        pass
 
     fm = FileManager(storage_root=str(storage_root or Path.home() / ".shdwbox"), db_connection=db)
 
