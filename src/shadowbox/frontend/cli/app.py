@@ -28,6 +28,7 @@ from textual.screen import ModalScreen
 from shadowbox.core.models import FileMetadata
 from shadowbox.frontend.cli.context import AppContext, build_context
 from shadowbox.database.search import search_fts
+from shadowbox.network.client import ServiceFinder, connect_and_request
 
 
 def _human_size(num: int) -> str:
@@ -55,23 +56,24 @@ class AddFileModal(ModalScreen[Optional[AddFileResult]]):
         self.encrypt_ready = encrypt_ready
 
     def compose(self) -> ComposeResult:  # pragma: no cover - UI only
-        yield Static("Add File", classes="title")
-        yield Label("Path (Enter to add, Esc to cancel)")
-        self.path_input = Input(placeholder="/path/to/file")
-        yield self.path_input
-        yield Label("Tags (comma-separated)")
-        self.tags_input = Input(placeholder="tag1, tag2")
-        yield self.tags_input
-        encrypt_label = (
-            "Encrypt file"
-            if self.encrypt_ready
-            else "Encryption unavailable (master key not set)"
-        )
-        self.encrypt_box = Checkbox(encrypt_label, disabled=not self.encrypt_ready)
-        yield self.encrypt_box
-        with Horizontal():
-            yield Button("Cancel (Esc)", id="cancel")
-            yield Button("Add (Enter)", id="ok", variant="primary")
+        with Vertical(classes="dialog"):
+            yield Static("Add File", classes="title")
+            yield Label("Path (Enter to add, Esc to cancel)")
+            self.path_input = Input(placeholder="/path/to/file")
+            yield self.path_input
+            yield Label("Tags (comma-separated)")
+            self.tags_input = Input(placeholder="tag1, tag2")
+            yield self.tags_input
+            encrypt_label = (
+                "Encrypt file"
+                if self.encrypt_ready
+                else "Encryption unavailable (master key not set)"
+            )
+            self.encrypt_box = Checkbox(encrypt_label, disabled=not self.encrypt_ready)
+            yield self.encrypt_box
+            with Horizontal():
+                yield Button("Cancel (Esc)", id="cancel")
+                yield Button("Add (Enter)", id="ok", variant="primary")
 
     def on_mount(self) -> None:  # pragma: no cover
         self.set_focus(self.path_input)
@@ -101,13 +103,14 @@ class DownloadResult:
 
 class DownloadModal(ModalScreen[Optional[DownloadResult]]):
     def compose(self) -> ComposeResult:  # pragma: no cover
-        yield Static("Download File", classes="title")
-        yield Label("Save to path (Enter to save, Esc to cancel)")
-        self.dest_input = Input(placeholder="/tmp/output")
-        yield self.dest_input
-        with Horizontal():
-            yield Button("Cancel (Esc)", id="cancel")
-            yield Button("Save (Enter)", id="ok", variant="primary")
+        with Vertical(classes="dialog"):
+            yield Static("Download File", classes="title")
+            yield Label("Save to path (Enter to save, Esc to cancel)")
+            self.dest_input = Input(placeholder="/tmp/output")
+            yield self.dest_input
+            with Horizontal():
+                yield Button("Cancel (Esc)", id="cancel")
+                yield Button("Save (Enter)", id="ok", variant="primary")
 
     def on_mount(self) -> None:  # pragma: no cover
         self.set_focus(self.dest_input)
@@ -135,14 +138,15 @@ class SearchResult:
 
 class SearchModal(ModalScreen[Optional[SearchResult]]):
     def compose(self) -> ComposeResult:  # pragma: no cover
-        yield Static("Search", classes="title")
-        self.q_input = Input(placeholder="query text")
-        yield self.q_input
-        self.scope_box = Checkbox("Search all boxes (unchecked = current box)")
-        yield self.scope_box
-        with Horizontal():
-            yield Button("Cancel (Esc)", id="cancel")
-            yield Button("Search (Enter)", id="ok", variant="primary")
+        with Vertical(classes="dialog"):
+            yield Static("Search", classes="title")
+            self.q_input = Input(placeholder="query text")
+            yield self.q_input
+            self.scope_box = Checkbox("Search all boxes (unchecked = current box)")
+            yield self.scope_box
+            with Horizontal():
+                yield Button("Cancel (Esc)", id="cancel")
+                yield Button("Search (Enter)", id="ok", variant="primary")
 
     def on_mount(self) -> None:  # pragma: no cover
         self.set_focus(self.q_input)
@@ -171,16 +175,17 @@ class NewBoxResult:
 
 class NewBoxModal(ModalScreen[Optional[NewBoxResult]]):
     def compose(self) -> ComposeResult:  # pragma: no cover
-        yield Static("New Box", classes="title")
-        self.name_input = Input(placeholder="box name")
-        yield self.name_input
-        self.desc_input = Input(placeholder="description (optional)")
-        yield self.desc_input
-        self.encrypt_box = Checkbox("Encrypt box (if backend ready)")
-        yield self.encrypt_box
-        with Horizontal():
-            yield Button("Cancel (Esc)", id="cancel")
-            yield Button("Create (Enter)", id="ok", variant="primary")
+        with Vertical(classes="dialog"):
+            yield Static("New Box", classes="title")
+            self.name_input = Input(placeholder="box name")
+            yield self.name_input
+            self.desc_input = Input(placeholder="description (optional)")
+            yield self.desc_input
+            self.encrypt_box = Checkbox("Encrypt box (if backend ready)")
+            yield self.encrypt_box
+            with Horizontal():
+                yield Button("Cancel (Esc)", id="cancel")
+                yield Button("Create (Enter)", id="ok", variant="primary")
 
     def on_mount(self) -> None:  # pragma: no cover
         self.set_focus(self.name_input)
@@ -216,10 +221,11 @@ class DeleteConfirmModal(ModalScreen[Optional[bool]]):
         self.prompt = prompt
 
     def compose(self) -> ComposeResult:  # pragma: no cover
-        yield Static(self.prompt)
-        with Horizontal():
-            yield Button("Cancel (Esc)", id="cancel")
-            yield Button("Delete (Enter)", id="ok", variant="error")
+        with Vertical(classes="dialog"):
+            yield Static(self.prompt)
+            with Horizontal():
+                yield Button("Cancel (Esc)", id="cancel")
+                yield Button("Delete (Enter)", id="ok", variant="error")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:  # pragma: no cover
         if event.button.id == "cancel":
@@ -241,19 +247,20 @@ class BoxInfoModal(ModalScreen[None]):
         self.info = info or {}
 
     def compose(self) -> ComposeResult:  # pragma: no cover
-        yield Static(f"Box: {self.box.box_name}", classes="title")
-        lines = [
-            f"Owner: {self.box.user_id}",
-            f"Shared: {self.box.is_shared}",
-            f"Encryption: {self.box.settings.get('encryption_enabled', False)}",
-            f"Files: {self.info.get('file_count')}",
-            f"Total size: {self.info.get('total_size', 0)} bytes",
-            f"Created: {self.info.get('created_at')}",
-            f"Updated: {self.info.get('updated_at')}",
-        ]
-        for line in lines:
-            yield Static(line)
-        yield Button("Close (Esc)", id="close")
+        with Vertical(classes="dialog"):
+            yield Static(f"Box: {self.box.box_name}", classes="title")
+            lines = [
+                f"Owner: {self.box.user_id}",
+                f"Shared: {self.box.is_shared}",
+                f"Encryption: {self.box.settings.get('encryption_enabled', False)}",
+                f"Files: {self.info.get('file_count')}",
+                f"Total size: {self.info.get('total_size', 0)} bytes",
+                f"Created: {self.info.get('created_at')}",
+                f"Updated: {self.info.get('updated_at')}",
+            ]
+            for line in lines:
+                yield Static(line)
+            yield Button("Close (Esc)", id="close")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:  # pragma: no cover
         self.dismiss(None)
@@ -272,16 +279,17 @@ class ShareBoxResult:
 
 class ShareBoxModal(ModalScreen[Optional[ShareBoxResult]]):
     def compose(self) -> ComposeResult:  # pragma: no cover
-        yield Static("Share Box", classes="title")
-        self.user_input = Input(placeholder="target user id")
-        yield self.user_input
-        self.perm_input = Input(placeholder="permission (read/write/admin)", value="read")
-        yield self.perm_input
-        self.expiry_input = Input(placeholder="expiry ISO (optional)")
-        yield self.expiry_input
-        with Horizontal():
-            yield Button("Cancel (Esc)", id="cancel")
-            yield Button("Share (Enter)", id="ok", variant="primary")
+        with Vertical(classes="dialog"):
+            yield Static("Share Box", classes="title")
+            self.user_input = Input(placeholder="target user id")
+            yield self.user_input
+            self.perm_input = Input(placeholder="permission (read/write/admin)", value="read")
+            yield self.perm_input
+            self.expiry_input = Input(placeholder="expiry ISO (optional)")
+            yield self.expiry_input
+            with Horizontal():
+                yield Button("Cancel (Esc)", id="cancel")
+                yield Button("Share (Enter)", id="ok", variant="primary")
 
     def on_mount(self) -> None:  # pragma: no cover
         self.set_focus(self.user_input)
@@ -332,18 +340,19 @@ class UnshareModal(ModalScreen[Optional[str]]):
         self.share_model = share_model
 
     def compose(self) -> ComposeResult:  # pragma: no cover
-        yield Static("Unshare Box", classes="title")
-        users = [
-            share["shared_with_user_id"]
-            for share in self.share_model.list_by_box(self.box_id)
-        ]
-        users_str = ", ".join(users) if users else "No shares"
-        yield Static(f"Shared with: {users_str}")
-        self.user_input = Input(placeholder="user id to remove")
-        yield self.user_input
-        with Horizontal():
-            yield Button("Cancel (Esc)", id="cancel")
-            yield Button("Remove (Enter)", id="ok", variant="primary")
+        with Vertical(classes="dialog"):
+            yield Static("Unshare Box", classes="title")
+            users = [
+                share["shared_with_user_id"]
+                for share in self.share_model.list_by_box(self.box_id)
+            ]
+            users_str = ", ".join(users) if users else "No shares"
+            yield Static(f"Shared with: {users_str}")
+            self.user_input = Input(placeholder="user id to remove")
+            yield self.user_input
+            with Horizontal():
+                yield Button("Cancel (Esc)", id="cancel")
+                yield Button("Remove (Enter)", id="ok", variant="primary")
 
     def on_mount(self) -> None:  # pragma: no cover
         self.set_focus(self.user_input)
@@ -359,6 +368,92 @@ class UnshareModal(ModalScreen[Optional[str]]):
             self.dismiss(None)
         elif event.key == "enter":
             self.dismiss(self.user_input.value.strip())
+
+
+class EditFileResult:
+    def __init__(self, tags: str, description: str):
+        self.tags = tags
+        self.description = description
+
+
+class EditFileModal(ModalScreen[Optional[EditFileResult]]):
+    def __init__(self, filename: str, tags: str, description: str):
+        super().__init__()
+        self.filename = filename
+        self.initial_tags = tags
+        self.initial_desc = description
+
+    def compose(self) -> ComposeResult:  # pragma: no cover
+        with Vertical(classes="dialog"):
+            yield Static(f"Edit: {self.filename}", classes="title")
+            yield Label("Tags (comma-separated)")
+            self.tags_input = Input(value=self.initial_tags)
+            yield self.tags_input
+            yield Label("Description")
+            self.desc_input = Input(value=self.initial_desc)
+            yield self.desc_input
+            with Horizontal():
+                yield Button("Cancel (Esc)", id="cancel")
+                yield Button("Save (Enter)", id="ok", variant="primary")
+
+    def on_mount(self) -> None:  # pragma: no cover
+        self.set_focus(self.tags_input)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:  # pragma: no cover
+        if event.button.id == "cancel":
+            self.dismiss(None)
+            return
+        self.dismiss(EditFileResult(self.tags_input.value, self.desc_input.value))
+
+    def on_key(self, event) -> None:  # pragma: no cover
+        if event.key == "escape":
+            self.dismiss(None)
+        elif event.key == "enter":
+            self.dismiss(EditFileResult(self.tags_input.value, self.desc_input.value))
+
+
+class PeerListModal(ModalScreen[None]):
+    def __init__(self):
+        super().__init__()
+        self.output = Static("Discovering peers...", classes="title")
+        self.info = None
+
+    def compose(self) -> ComposeResult:  # pragma: no cover
+        with Vertical(classes="dialog"):
+            yield Static("Peers (LAN discovery)", classes="title")
+            yield self.output
+            with Horizontal():
+                yield Button("Close (Esc/Enter)", id="close")
+
+    def on_mount(self) -> None:  # pragma: no cover
+        # kick off discovery without blocking UI
+        self.set_interval(0.1, self._discover_and_list, pause=False, repeat=False)
+
+    def _discover_and_list(self) -> None:
+        try:
+            finder = ServiceFinder()
+            info = finder.wait_for_service()
+            finder.close()
+            if not info:
+                self.output.update("No peers found.")
+                return
+            self.info = info
+            res = connect_and_request(info["ip"], info["port"], "LIST")
+            text = res.get("text", "").strip() if isinstance(res, dict) else str(res)
+            self.output.update(
+                f"Found: {info['name']} @ {info['ip']}:{info['port']}\n\nFiles:\n{text or '(empty)'}"
+            )
+        except Exception as exc:
+            self.output.update(f"Discovery/List failed: {exc}")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:  # pragma: no cover
+        self.dismiss(None)
+
+    def on_key(self, event) -> None:  # pragma: no cover
+        if event.key in ("escape", "enter"):
+            self.dismiss(None)
+
+
 class ShadowBoxApp(App):
     """Textual scaffold showing boxes and files; ready to extend."""
 
@@ -368,6 +463,8 @@ class ShadowBoxApp(App):
     .title { padding: 1 1; text-style: bold; }
     #status { padding: 0 1 1 1; height: 3; color: $text-muted; }
     .section-label { padding: 0 1; color: $text-muted; }
+    ModalScreen { align: center middle; background: rgba(0,0,0,0.45); }
+    .dialog { width: 75%; height: 75%; padding: 1; border: heavy $surface; background: $boost; }
     """
 
     BINDINGS = [
@@ -382,6 +479,8 @@ class ShadowBoxApp(App):
         ("b", "box_info", "Box Info"),
         ("s", "share_box", "Share Box"),
         ("u", "unshare_box", "Unshare Box"),
+        ("p", "peer_list", "Peers"),
+        ("e", "edit_file", "Edit File"),
     ]
 
     def __init__(self, ctx: AppContext | None = None):
@@ -460,6 +559,10 @@ class ShadowBoxApp(App):
         self.table.clear(columns=False)
         self.row_keys = []
 
+        if not self.ctx.active_box:
+            self._set_status("No active box")
+            return
+
         try:
             files: Iterable[FileMetadata] = self.ctx.fm.list_box_files(
                 self.ctx.active_box.box_id
@@ -518,6 +621,7 @@ class ShadowBoxApp(App):
     # === Actions ===
 
     def action_add_file(self) -> None:
+        self._set_status("Adding file...")
         self.push_screen(
             AddFileModal(encrypt_ready=self.ctx.fm.encryption_enabled),
             self._handle_add_file,
@@ -535,6 +639,7 @@ class ShadowBoxApp(App):
                 encrypt=result.encrypt,
             )
             self.refresh_files()
+            self._set_status("Added file")
         except Exception as exc:  # pragma: no cover - UI-only
             self._set_status(f"Add failed: {exc}")
 
@@ -551,6 +656,7 @@ class ShadowBoxApp(App):
         if not file_id:
             self._set_status("Select a file first")
             return
+        self._set_status("Downloading...")
         self.push_screen(DownloadModal(), lambda res: self._handle_download(res, file_id))
 
     def _handle_download(self, result: Optional["DownloadResult"], file_id: str) -> None:
@@ -567,9 +673,18 @@ class ShadowBoxApp(App):
         if not file_id:
             self._set_status("Select a file first")
             return
+        filename = self.table.get_row_at(self.table.cursor_row)[0] if self.table else ""
+        prompt = f"Delete file '{filename}'?"
+        self.push_screen(DeleteConfirmModal(prompt), lambda ok: self._handle_delete_file(ok, file_id))
+
+    def _handle_delete_file(self, confirmed: bool, file_id: str) -> None:
+        if not confirmed:
+            return
         try:
+            self._set_status("Deleting...")
             self.ctx.fm.delete_file(file_id, soft=True)
             self.refresh_files()
+            self._set_status("Deleted file")
         except Exception as exc:  # pragma: no cover - UI-only
             self._set_status(f"Delete failed: {exc}")
 
@@ -649,12 +764,18 @@ class ShadowBoxApp(App):
         try:
             self.ctx.fm.delete_box(self.ctx.active_box.box_id)
             boxes = self.ctx.fm.list_user_boxes(self.ctx.user.user_id)
-            self.ctx.active_box = boxes[0] if boxes else None
-            if self.ctx.active_box:
-                self._persist_last_box(self.ctx.active_box.box_id)
+            shared_boxes = self.ctx.fm.list_shared_boxes(self.ctx.user.user_id)
+            self.ctx.active_box = None
+            if boxes:
+                self.ctx.active_box = boxes[0]
+            elif shared_boxes:
+                self.ctx.active_box = shared_boxes[0]
             self.refresh_boxes()
             self.refresh_files()
-            self._set_status("Box deleted")
+            msg = "Box deleted"
+            if not self.ctx.active_box:
+                msg += " (no boxes left)"
+            self._set_status(msg)
         except Exception as exc:
             self._set_status(f"Delete failed: {exc}")
 
@@ -704,6 +825,41 @@ class ShadowBoxApp(App):
             self._set_status("Unshared")
         except Exception as exc:
             self._set_status(f"Unshare failed: {exc}")
+
+    # Network (read-only peer list)
+    def action_peer_list(self) -> None:
+        self.push_screen(PeerListModal())
+
+    # Edit file metadata (tags + description)
+    def action_edit_file(self) -> None:
+        file_id = self._selected_file_id()
+        if not file_id:
+            self._set_status("Select a file first")
+            return
+        meta = self.ctx.fm.get_file_metadata(file_id)
+        if not meta:
+            self._set_status("File not found")
+            return
+        self.push_screen(
+            EditFileModal(
+                filename=meta.filename,
+                tags=", ".join(meta.tags),
+                description=meta.description or "",
+            ),
+            lambda res: self._handle_edit_file(res, meta),
+        )
+
+    def _handle_edit_file(self, result, meta):
+        if not result:
+            return
+        try:
+            meta.tags = [t.strip() for t in result.tags.split(",") if t.strip()]
+            meta.description = result.description.strip() or None
+            self.ctx.fm.file_model.update(meta)
+            self.refresh_files()
+            self._set_status("Updated file metadata")
+        except Exception as exc:  # pragma: no cover
+            self._set_status(f"Update failed: {exc}")
 
     def _persist_last_box(self, box_id: str) -> None:
         from shadowbox.frontend.cli.config_store import load_config, save_config
