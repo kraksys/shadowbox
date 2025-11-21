@@ -9,8 +9,6 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Iterable, Optional
 
-import logging
-
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.widgets import (
@@ -29,7 +27,6 @@ from textual.screen import ModalScreen
 
 from shadowbox.core.models import FileMetadata
 from shadowbox.frontend.cli.context import AppContext, build_context
-from shadowbox.frontend.cli.logging_config import configure_logging
 from shadowbox.database.search import search_fts
 
 
@@ -165,14 +162,212 @@ class SearchModal(ModalScreen[Optional[SearchResult]]):
             self.dismiss(SearchResult(query=q, scope_all=self.scope_box.value))
 
 
+class NewBoxResult:
+    def __init__(self, name: str, description: str | None, encrypt: bool):
+        self.name = name
+        self.description = description
+        self.encrypt = encrypt
+
+
+class NewBoxModal(ModalScreen[Optional[NewBoxResult]]):
+    def compose(self) -> ComposeResult:  # pragma: no cover
+        yield Static("New Box", classes="title")
+        self.name_input = Input(placeholder="box name")
+        yield self.name_input
+        self.desc_input = Input(placeholder="description (optional)")
+        yield self.desc_input
+        self.encrypt_box = Checkbox("Encrypt box (if backend ready)")
+        yield self.encrypt_box
+        with Horizontal():
+            yield Button("Cancel (Esc)", id="cancel")
+            yield Button("Create (Enter)", id="ok", variant="primary")
+
+    def on_mount(self) -> None:  # pragma: no cover
+        self.set_focus(self.name_input)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:  # pragma: no cover
+        if event.button.id == "cancel":
+            self.dismiss(None)
+            return
+        self.dismiss(
+            NewBoxResult(
+                name=self.name_input.value.strip(),
+                description=self.desc_input.value.strip() or None,
+                encrypt=self.encrypt_box.value,
+            )
+        )
+
+    def on_key(self, event) -> None:  # pragma: no cover
+        if event.key == "escape":
+            self.dismiss(None)
+        elif event.key == "enter":
+            self.dismiss(
+                NewBoxResult(
+                    name=self.name_input.value.strip(),
+                    description=self.desc_input.value.strip() or None,
+                    encrypt=self.encrypt_box.value,
+                )
+            )
+
+
+class DeleteConfirmModal(ModalScreen[Optional[bool]]):
+    def __init__(self, prompt: str):
+        super().__init__()
+        self.prompt = prompt
+
+    def compose(self) -> ComposeResult:  # pragma: no cover
+        yield Static(self.prompt)
+        with Horizontal():
+            yield Button("Cancel (Esc)", id="cancel")
+            yield Button("Delete (Enter)", id="ok", variant="error")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:  # pragma: no cover
+        if event.button.id == "cancel":
+            self.dismiss(False)
+        else:
+            self.dismiss(True)
+
+    def on_key(self, event) -> None:  # pragma: no cover
+        if event.key == "escape":
+            self.dismiss(False)
+        elif event.key == "enter":
+            self.dismiss(True)
+
+
+class BoxInfoModal(ModalScreen[None]):
+    def __init__(self, box, info):
+        super().__init__()
+        self.box = box
+        self.info = info or {}
+
+    def compose(self) -> ComposeResult:  # pragma: no cover
+        yield Static(f"Box: {self.box.box_name}", classes="title")
+        lines = [
+            f"Owner: {self.box.user_id}",
+            f"Shared: {self.box.is_shared}",
+            f"Encryption: {self.box.settings.get('encryption_enabled', False)}",
+            f"Files: {self.info.get('file_count')}",
+            f"Total size: {self.info.get('total_size', 0)} bytes",
+            f"Created: {self.info.get('created_at')}",
+            f"Updated: {self.info.get('updated_at')}",
+        ]
+        for line in lines:
+            yield Static(line)
+        yield Button("Close (Esc)", id="close")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:  # pragma: no cover
+        self.dismiss(None)
+
+    def on_key(self, event) -> None:  # pragma: no cover
+        if event.key in ("escape", "enter"):
+            self.dismiss(None)
+
+
+class ShareBoxResult:
+    def __init__(self, user_id: str, permission: str, expires_at=None):
+        self.user_id = user_id
+        self.permission = permission
+        self.expires_at = expires_at
+
+
+class ShareBoxModal(ModalScreen[Optional[ShareBoxResult]]):
+    def compose(self) -> ComposeResult:  # pragma: no cover
+        yield Static("Share Box", classes="title")
+        self.user_input = Input(placeholder="target user id")
+        yield self.user_input
+        self.perm_input = Input(placeholder="permission (read/write/admin)", value="read")
+        yield self.perm_input
+        self.expiry_input = Input(placeholder="expiry ISO (optional)")
+        yield self.expiry_input
+        with Horizontal():
+            yield Button("Cancel (Esc)", id="cancel")
+            yield Button("Share (Enter)", id="ok", variant="primary")
+
+    def on_mount(self) -> None:  # pragma: no cover
+        self.set_focus(self.user_input)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:  # pragma: no cover
+        if event.button.id == "cancel":
+            self.dismiss(None)
+            return
+        expiry_txt = self.expiry_input.value.strip()
+        expires_at = None
+        if expiry_txt:
+            try:
+                expires_at = datetime.fromisoformat(expiry_txt)
+            except Exception:
+                expires_at = None
+        self.dismiss(
+            ShareBoxResult(
+                user_id=self.user_input.value.strip(),
+                permission=self.perm_input.value.strip() or "read",
+                expires_at=expires_at,
+            )
+        )
+
+    def on_key(self, event) -> None:  # pragma: no cover
+        if event.key == "escape":
+            self.dismiss(None)
+        elif event.key == "enter":
+            expiry_txt = self.expiry_input.value.strip()
+            expires_at = None
+            if expiry_txt:
+                try:
+                    expires_at = datetime.fromisoformat(expiry_txt)
+                except Exception:
+                    expires_at = None
+            self.dismiss(
+                ShareBoxResult(
+                    user_id=self.user_input.value.strip(),
+                    permission=self.perm_input.value.strip() or "read",
+                    expires_at=expires_at,
+                )
+            )
+
+
+class UnshareModal(ModalScreen[Optional[str]]):
+    def __init__(self, box_id: str, share_model):
+        super().__init__()
+        self.box_id = box_id
+        self.share_model = share_model
+
+    def compose(self) -> ComposeResult:  # pragma: no cover
+        yield Static("Unshare Box", classes="title")
+        users = [
+            share["shared_with_user_id"]
+            for share in self.share_model.list_by_box(self.box_id)
+        ]
+        users_str = ", ".join(users) if users else "No shares"
+        yield Static(f"Shared with: {users_str}")
+        self.user_input = Input(placeholder="user id to remove")
+        yield self.user_input
+        with Horizontal():
+            yield Button("Cancel (Esc)", id="cancel")
+            yield Button("Remove (Enter)", id="ok", variant="primary")
+
+    def on_mount(self) -> None:  # pragma: no cover
+        self.set_focus(self.user_input)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:  # pragma: no cover
+        if event.button.id == "cancel":
+            self.dismiss(None)
+            return
+        self.dismiss(self.user_input.value.strip())
+
+    def on_key(self, event) -> None:  # pragma: no cover
+        if event.key == "escape":
+            self.dismiss(None)
+        elif event.key == "enter":
+            self.dismiss(self.user_input.value.strip())
 class ShadowBoxApp(App):
     """Textual scaffold showing boxes and files; ready to extend."""
 
     CSS = """
-    #sidebar { width: 28%; min-width: 22; border: heavy $surface; }
+    #sidebar { width: 30%; min-width: 24; border: heavy $surface; }
     #main { border: heavy $surface; }
     .title { padding: 1 1; text-style: bold; }
     #status { padding: 0 1 1 1; height: 3; color: $text-muted; }
+    .section-label { padding: 0 1; color: $text-muted; }
     """
 
     BINDINGS = [
@@ -182,15 +377,19 @@ class ShadowBoxApp(App):
         ("enter", "download", "Download"),
         ("d", "delete_file", "Delete"),
         ("/", "search", "Search"),
+        ("n", "new_box", "New Box"),
+        ("x", "delete_box", "Delete Box"),
+        ("b", "box_info", "Box Info"),
+        ("s", "share_box", "Share Box"),
+        ("u", "unshare_box", "Unshare Box"),
     ]
 
     def __init__(self, ctx: AppContext | None = None):
-        configure_logging()
-        self.logger = logging.getLogger(self.__class__.__name__)
         self.ctx = ctx or build_context()
         super().__init__()
 
         self.boxes: ListView | None = None
+        self.shared_boxes: ListView | None = None
         self.table: DataTable | None = None
         self.status: Static | None = None
         self.row_keys: list[str] = []
@@ -199,9 +398,12 @@ class ShadowBoxApp(App):
         yield Header(show_clock=True)
         with Horizontal():
             with Vertical(id="sidebar"):
-                yield Static("Boxes", classes="title")
+                yield Static("My Boxes", classes="title")
                 self.boxes = ListView(id="boxes")
                 yield self.boxes
+                yield Static("Shared with Me", classes="title")
+                self.shared_boxes = ListView(id="shared")
+                yield self.shared_boxes
             with Vertical(id="main"):
                 yield Static("Files", classes="title")
                 self.table = DataTable(id="files")
@@ -220,10 +422,12 @@ class ShadowBoxApp(App):
     def refresh_boxes(self) -> None:
         assert self.boxes is not None
         self.boxes.clear()
+        if self.shared_boxes:
+            self.shared_boxes.clear()
         try:
             user_boxes = self.ctx.fm.list_user_boxes(self.ctx.user.user_id)
+            shared_boxes = self.ctx.fm.list_shared_boxes(self.ctx.user.user_id)
         except Exception as exc:  # pragma: no cover - UI only
-            self.logger.error("Failed to load boxes: %s", exc)
             self._set_status(f"Error loading boxes: {exc}")
             return
 
@@ -232,11 +436,23 @@ class ShadowBoxApp(App):
             item.data = box
             self.boxes.append(item)
 
+        if self.shared_boxes is not None:
+            for box in shared_boxes:
+                item = ListItem(Static(f"{box.box_name} (shared)"))
+                item.data = box
+                self.shared_boxes.append(item)
+
         # Keep selection aligned with active box.
         for idx, item in enumerate(self.boxes.children):
             if getattr(item, "data", None) and item.data.box_id == self.ctx.active_box.box_id:
                 self.boxes.index = idx
                 break
+        if self.shared_boxes and self.ctx.active_box:
+            if self.ctx.active_box.user_id != self.ctx.user.user_id:
+                for idx, item in enumerate(self.shared_boxes.children):
+                    if getattr(item, "data", None) and item.data.box_id == self.ctx.active_box.box_id:
+                        self.shared_boxes.index = idx
+                        break
 
     def refresh_files(self) -> None:
         assert self.table is not None
@@ -249,7 +465,6 @@ class ShadowBoxApp(App):
                 self.ctx.active_box.box_id
             )
         except Exception as exc:  # pragma: no cover - UI-only
-            self.logger.error("Failed to load files: %s", exc)
             self._set_status(f"Error loading files: {exc}")
             return
 
@@ -275,6 +490,12 @@ class ShadowBoxApp(App):
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         box = getattr(event.item, "data", None)
         if box:
+            self.ctx.active_box = box
+            self.refresh_files()
+
+    def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
+        box = getattr(event.item, "data", None)
+        if box and box != self.ctx.active_box:
             self.ctx.active_box = box
             self.refresh_files()
 
@@ -314,7 +535,6 @@ class ShadowBoxApp(App):
                 encrypt=result.encrypt,
             )
             self.refresh_files()
-            self.logger.info("Added file %s", result.path)
         except Exception as exc:  # pragma: no cover - UI-only
             self._set_status(f"Add failed: {exc}")
 
@@ -339,7 +559,6 @@ class ShadowBoxApp(App):
         try:
             self.ctx.fm.get_file(file_id=file_id, destination_path=result.dest)
             self._set_status(f"Saved to {result.dest}")
-            self.logger.info("Downloaded %s", result.dest)
         except Exception as exc:  # pragma: no cover - UI-only
             self._set_status(f"Download failed: {exc}")
 
@@ -351,7 +570,6 @@ class ShadowBoxApp(App):
         try:
             self.ctx.fm.delete_file(file_id, soft=True)
             self.refresh_files()
-            self.logger.info("Deleted file %s", file_id)
         except Exception as exc:  # pragma: no cover - UI-only
             self._set_status(f"Delete failed: {exc}")
 
@@ -393,6 +611,106 @@ class ShadowBoxApp(App):
             self.row_keys.append(f.file_id)
 
         self._set_status(f"Search: {len(hits)} result(s)")
+
+    # Box CRUD
+    def action_new_box(self) -> None:
+        self.push_screen(NewBoxModal(), self._handle_new_box)
+
+    def _handle_new_box(self, result: Optional["NewBoxResult"]):
+        if not result:
+            return
+        try:
+            box = self.ctx.fm.create_box(
+                user_id=self.ctx.user.user_id,
+                box_name=result.name,
+                description=result.description or None,
+                enable_encryption=result.encrypt,
+            )
+            self.refresh_boxes()
+            self.ctx.active_box = box
+            self._persist_last_box(box.box_id)
+            self.refresh_files()
+            self._set_status(f"Created box {box.box_name}")
+        except Exception as exc:
+            self._set_status(f"Create box failed: {exc}")
+
+    def action_delete_box(self) -> None:
+        if not self.ctx.active_box:
+            return
+        if self.ctx.active_box.user_id != self.ctx.user.user_id:
+            self._set_status("Cannot delete: not owner")
+            return
+        prompt = f"Delete box '{self.ctx.active_box.box_name}'?"
+        self.push_screen(DeleteConfirmModal(prompt), self._handle_delete_box)
+
+    def _handle_delete_box(self, confirmed: bool):
+        if not confirmed:
+            return
+        try:
+            self.ctx.fm.delete_box(self.ctx.active_box.box_id)
+            boxes = self.ctx.fm.list_user_boxes(self.ctx.user.user_id)
+            self.ctx.active_box = boxes[0] if boxes else None
+            if self.ctx.active_box:
+                self._persist_last_box(self.ctx.active_box.box_id)
+            self.refresh_boxes()
+            self.refresh_files()
+            self._set_status("Box deleted")
+        except Exception as exc:
+            self._set_status(f"Delete failed: {exc}")
+
+    def action_box_info(self) -> None:
+        if not self.ctx.active_box:
+            return
+        info = self.ctx.fm.get_box_info(self.ctx.user.user_id, self.ctx.active_box.box_id)
+        self.push_screen(BoxInfoModal(self.ctx.active_box, info))
+
+    # Sharing
+    def action_share_box(self) -> None:
+        if not self.ctx.active_box:
+            return
+        if self.ctx.active_box.user_id != self.ctx.user.user_id:
+            self._set_status("Only owners can share boxes")
+            return
+        self.push_screen(ShareBoxModal(), self._handle_share_box)
+
+    def _handle_share_box(self, result: Optional["ShareBoxResult"]) -> None:
+        if not result:
+            return
+        try:
+            self.ctx.fm.share_box(
+                box_id=self.ctx.active_box.box_id,
+                shared_by_user_id=self.ctx.user.user_id,
+                shared_with_user_id=result.user_id,
+                permission_level=result.permission,
+                expires_at=result.expires_at,
+            )
+            self._set_status("Box shared")
+        except Exception as exc:
+            self._set_status(f"Share failed: {exc}")
+
+    def action_unshare_box(self) -> None:
+        if not self.ctx.active_box:
+            return
+        if self.ctx.active_box.user_id != self.ctx.user.user_id:
+            self._set_status("Only owners can unshare boxes")
+            return
+        self.push_screen(UnshareModal(self.ctx.active_box.box_id, self.ctx.fm.box_share_model), self._handle_unshare)
+
+    def _handle_unshare(self, result: Optional[str]) -> None:
+        if not result:
+            return
+        try:
+            self.ctx.fm.unshare_box(self.ctx.active_box.box_id, self.ctx.user.user_id, result)
+            self._set_status("Unshared")
+        except Exception as exc:
+            self._set_status(f"Unshare failed: {exc}")
+
+    def _persist_last_box(self, box_id: str) -> None:
+        from shadowbox.frontend.cli.config_store import load_config, save_config
+
+        cfg = load_config()
+        cfg["last_box_id"] = box_id
+        save_config(cfg)
 
 
 if __name__ == "__main__":  # pragma: no cover
