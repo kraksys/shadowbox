@@ -3,6 +3,7 @@ python-dotenv
 click
 rich
 zeroconf
+textual>=0.58.0
 
 # Testing
 pytest

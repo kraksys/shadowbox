@@ -59,6 +59,7 @@ requires-python = ">=3.11"
 dependencies = [
     "cryptography>=46.0.3",
     "zeroconf",
+    "textual>=0.58.0",
 ]
 
 [tool.setuptools]
