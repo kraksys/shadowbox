@@ -26,3 +26,11 @@ def file_manager(tmp_path: Path) -> FileManager:
     db_conn = DatabaseConnection(str(db_path))
     db_conn.initialize()
     return FileManager(str(storage_root), db_conn)
+
+
+def test_create_user_creates_directory_and_records(file_manager: FileManager) -> None:
+    """Ensure creating a user initializes storage and records metadata."""
+    user_directory = file_manager.create_user("alice")
+
+    assert Path(user_directory.root_path).exists()
+    assert file_manager.user_model.get(user_directory.user_id)["username"] == "alice"
