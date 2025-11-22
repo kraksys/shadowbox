@@ -38,3 +38,28 @@ def test_create_user_duplicate_raises(file_manager: FileManager) -> None:
 
     with pytest.raises(UserExistsError):
         file_manager.create_user("alice")
+
+
+def test_add_file_happy_path_updates_quota_and_metadata(
+    file_manager: FileManager, tmp_path: Path
+) -> None:
+    """Add a file and confirm metadata and quota update correctly."""
+    user = file_manager.create_user("bob")
+    source_file = tmp_path / "example.txt"
+    content = b"sample data"
+    source_file.write_bytes(content)
+
+    metadata = file_manager.add_file(
+        user_id=user.user_id,
+        source_path=str(source_file),
+        box_id="?",
+        tags=["docs"],
+    )
+
+    stored = file_manager.file_model.get(metadata.file_id)
+    assert stored is not None
+    assert stored.hash_sha256 == metadata.hash_sha256
+    assert stored.tags == ["docs"]
+
+    user_record = file_manager.user_model.get(user.user_id)
+    assert user_record["used_bytes"] == len(content)
