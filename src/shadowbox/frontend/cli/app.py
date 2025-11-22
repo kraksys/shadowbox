@@ -457,6 +457,8 @@ class PeerListModal(ModalScreen[None]):
 class ShadowBoxApp(App):
     """Textual scaffold showing boxes and files; ready to extend."""
 
+    TITLE = "ShadowBox"
+
     CSS = """
     #sidebar { width: 30%; min-width: 24; border: heavy $surface; }
     #main { border: heavy $surface; }
