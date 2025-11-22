@@ -49,6 +49,11 @@ class UserModel(BaseModel):
         query = "SELECT * FROM users WHERE username = ?"
         return self.db.fetch_one(query, (username,))
 
+    def list_all(self):
+        """List all users."""
+        query = "SELECT * FROM users ORDER BY username"
+        return self.db.fetch_all(query)
+
     def update_quota(self, user_id, used_bytes):
         """Update a user's used_bytes quota value."""
         query = "UPDATE users SET used_bytes = ? WHERE user_id = ?"
