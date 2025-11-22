@@ -1,7 +1,6 @@
 """Minimal Textual app scaffold for ShadowBox.
 
 Start here with `python -m shadowbox.frontend.cli.app`
-and extend widgets/flows without touching the backend.
 """
 
 from __future__ import annotations
