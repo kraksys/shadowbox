@@ -39,7 +39,7 @@ Default port = 9999
         python -m shadowbox.network.server --mode test --shared-dir ./shared_dir --port 9999
         python -m shadowbox.network.server --mode core --db ./shadowbox.db --storage-root ~/.shdwbox --username bob --port 9999
 """
-
+import json
 import os
 import socket
 import threading
@@ -90,6 +90,14 @@ def get_local_ip():
     finally:
         s.close()
 
+
+def send_json(conn, data):
+    """Helper to send a python dict/list as a newline-terminated JSON string."""
+    try:
+        payload = json.dumps(data)
+        conn.sendall((payload + "\n").encode())
+    except Exception as e:
+        print(f"Error sending JSON: {e}")
 
 def handle_client(conn, addr, context):
     """Handle a single client connection."""
