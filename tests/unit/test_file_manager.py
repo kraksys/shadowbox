@@ -235,3 +235,17 @@ def test_update_box_rejects_encryption_change(
 
     with pytest.raises(ValueError):
         file_manager.update_box(mutated)
+
+
+def test_list_shared_boxes_skips_irrelevant(file_manager: FileManager) -> None:
+    """Return only boxes shared with the requested user."""
+    owner = file_manager.create_user("una")
+    viewer = file_manager.create_user("victor")
+    other = file_manager.create_user("wanda")
+    box = file_manager.create_box(owner.user_id, "articles")
+
+    file_manager.share_box(box.box_id, owner.user_id, viewer.user_id)
+    file_manager.share_box(box.box_id, owner.user_id, other.user_id)
+
+    boxes_for_viewer = file_manager.list_shared_boxes(viewer.user_id)
+    assert {b.box_id for b in boxes_for_viewer} == {box.box_id}
