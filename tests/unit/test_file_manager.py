@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from shadowbox.core.exceptions import (
+    AccessDeniedError,
     BoxExistsError,
     BoxNotFoundError,
     QuotaExceededError,
@@ -160,3 +161,21 @@ def test_shared_box_write_access_allows_add_file(file_manager: FileManager, tmp_
     assert stored.tags == ["shared"]
     assert stored.user_id == collaborator.user_id
     assert file_manager.user_model.get(collaborator.user_id)["used_bytes"] == len(content)
+
+
+def test_list_box_files_enforces_access_control(file_manager: FileManager, tmp_path: Path) -> None:
+    """Listing box files is forbidden for users without read access."""
+    owner = file_manager.create_user("dana")
+    outsider = file_manager.create_user("outsider")
+    box = file_manager.create_box(user_id=owner.user_id, box_name="private")
+
+    source_file = tmp_path / "secret.txt"
+    source_file.write_bytes(b"top secret")
+    file_manager.add_file(
+        user_id=owner.user_id,
+        box_id=box.box_id,
+        source_path=str(source_file),
+    )
+
+    with pytest.raises(AccessDeniedError):
+        file_manager.list_box_files(box.box_id, user_id=outsider.user_id)
