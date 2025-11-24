@@ -109,3 +109,24 @@ def test_add_file_respects_quota(file_manager: FileManager, tmp_path: Path) -> N
             box_id=box.box_id,
             source_path=str(source_file),
         )
+
+
+def test_delete_file_updates_used_bytes(file_manager: FileManager, tmp_path: Path) -> None:
+    """Deleting a file frees the quota used by that file."""
+    user = file_manager.create_user("cora")
+    box = file_manager.create_box(user_id=user.user_id, box_name="docs")
+    source_file = tmp_path / "note.txt"
+    content = b"memo"
+    source_file.write_bytes(content)
+
+    metadata = file_manager.add_file(
+        user_id=user.user_id,
+        box_id=box.box_id,
+        source_path=str(source_file),
+    )
+
+    assert file_manager.user_model.get(user.user_id)["used_bytes"] == len(content)
+
+    file_manager.delete_file(metadata.file_id)
+
+    assert file_manager.user_model.get(user.user_id)["used_bytes"] == 0
