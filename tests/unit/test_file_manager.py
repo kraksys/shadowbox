@@ -45,6 +45,10 @@ def test_add_file_happy_path_updates_quota_and_metadata(
 ) -> None:
     """Add a file and confirm metadata and quota update correctly."""
     user = file_manager.create_user("bob")
+    box = file_manager.create_box(
+        user_id=user.user_id,
+        box_name="some-test-box",
+    )
     source_file = tmp_path / "example.txt"
     content = b"sample data"
     source_file.write_bytes(content)
@@ -52,7 +56,7 @@ def test_add_file_happy_path_updates_quota_and_metadata(
     metadata = file_manager.add_file(
         user_id=user.user_id,
         source_path=str(source_file),
-        box_id="?",
+        box_id=box.box_id,
         tags=["docs"],
     )
 
