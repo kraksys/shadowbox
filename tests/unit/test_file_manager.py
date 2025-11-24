@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from shadowbox.core.exceptions import (
+    BoxExistsError,
     UserExistsError,
 )
 from shadowbox.core.file_manager import FileManager
@@ -38,6 +39,15 @@ def test_create_user_duplicate_raises(file_manager: FileManager) -> None:
 
     with pytest.raises(UserExistsError):
         file_manager.create_user("alice")
+
+
+def test_create_box_duplicate_name_raises(file_manager: FileManager) -> None:
+    """Creating a box with a duplicate name for the same user raises an error."""
+    user = file_manager.create_user("alex")
+    file_manager.create_box(user_id=user.user_id, box_name="projects")
+
+    with pytest.raises(BoxExistsError):
+        file_manager.create_box(user_id=user.user_id, box_name="projects")
 
 
 def test_add_file_happy_path_updates_quota_and_metadata(
