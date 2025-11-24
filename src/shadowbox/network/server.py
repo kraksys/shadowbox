@@ -45,6 +45,8 @@ import socket
 import threading
 import sys
 import argparse
+import random
+import string
 from zeroconf import Zeroconf, ServiceInfo
 
 from .adapter import init_env, format_list, open_for_get, finalize_put, delete_filename, select_box, list_boxes, share_box, list_available_users, list_shared_with_user
@@ -376,7 +378,7 @@ def handle_client(conn, addr, context):
                     box_name = parts[1]
                     share_with_user = parts[2]
                     permission = parts[3] if len(parts) > 3 else "read"
-                    response = share_box(context["env"], box_name, share_with_user, permission)
+                    response = share_box(context["env"], box_name, share_with_user, permission) #look at this when calling share box and spinning up the server so we can avoid repetitions
                     conn.sendall(response.encode())
             else:
                 conn.sendall(b"ERROR: Command only available in core mode\n")
@@ -423,7 +425,7 @@ def start_tcp_server(context, port):
 
 
 # Zeroconf advertisement
-def advertise_service(name, port):
+def advertise_service(name, port, service):
     """Advertise this server using Zeroconf."""
     zeroconf = Zeroconf()
     local_ip = get_local_ip()
@@ -431,16 +433,75 @@ def advertise_service(name, port):
     props = {"name": name, "version": "1.0"}
 
     info = ServiceInfo(
-        SERVICE_TYPE,
-        f"{name}.{SERVICE_TYPE}",
+        service,
+        f"{name}.{service}",
         addresses=[local_ip_bytes],
         port=port,
         properties=props,
         server=f"{socket.gethostname()}.local.",
     )
     zeroconf.register_service(info)
-    print(f"Zeroconf service registered: {name} @ {local_ip}:{port}")
+    print(f"Zeroconf service registered: {name} @ {local_ip}:{port}, SERVICE_TYPE = {service}")
     return zeroconf, info
+
+
+def give_code() -> str:
+    # choose from all lowercase letter
+    letters = string.ascii_lowercase
+    result_str = ''.join(random.choice(letters) for i in range(4))
+    return result_str
+
+def share_with(code_to_share: str, username: str, box_name: str, permissions: str, db = "./shadowbox.db", storage_root = None, port = 9999):
+    """
+    Function that integrates everything from adapter and server logic to spin up a server every time a User wants to share a box.
+    Usage:
+
+    the 4 letters that you need to give to the other person
+                |
+    share_with(code, username, box_name, permissions, db, storage_root, port)
+                        |                     |
+                        |                 read/write
+                        |
+            this username can be whatever you want
+            so you can say (I want to share with Atanas) and the
+            user is going to be "Atanas" in the db, but it
+            can also be "yabadabadoo"
+
+    !!! If you give the code "" it will be shared with everyone
+    #TODO Implement share with everyone option code_to_share = ""
+    This will automatically update the db and start up the server with the given username.
+    """
+    if not code_to_share:
+        code_to_share = ""
+
+    #create the env that we will use for the server
+    env = init_env(db_path=db, storage_root=storage_root, username=username)
+    context = {"mode": "core", "env": env}
+    name = f"FileServer-{socket.gethostname()}"
+
+    #insert the code in the service name
+    global SERVICE_TYPE
+    SERVICE_TYPE = f"_shadowbox{code_to_share}._tcp.local."
+
+    #from adapter
+    share_box(context["env"], box_name, username, permissions)
+
+    #broadcast it on the mDNS
+    zeroconf, info = advertise_service(name, port, service=SERVICE_TYPE)
+
+    #start the server
+    try:
+        start_tcp_server(context, port)
+    except KeyboardInterrupt:
+        print("\nShutting down...")
+    finally:
+
+        print("Unregistering Zeroconf service...")
+        try:
+            zeroconf.unregister_service(info)
+        except Exception:
+            pass
+        zeroconf.close()
 
 
 # Main entry point (augmented with argparse)
