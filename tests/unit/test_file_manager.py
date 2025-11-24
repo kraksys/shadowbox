@@ -7,6 +7,7 @@ import pytest
 
 from shadowbox.core.exceptions import (
     BoxExistsError,
+    BoxNotFoundError,
     UserExistsError,
 )
 from shadowbox.core.file_manager import FileManager
@@ -77,3 +78,17 @@ def test_add_file_happy_path_updates_quota_and_metadata(
 
     user_record = file_manager.user_model.get(user.user_id)
     assert user_record["used_bytes"] == len(content)
+
+
+def test_add_file_requires_existing_box(file_manager: FileManager, tmp_path: Path) -> None:
+    """Attempting to add a file to a missing box raises an error."""
+    user = file_manager.create_user("eve")
+    source_file = tmp_path / "missing_box.txt"
+    source_file.write_bytes(b"data")
+
+    with pytest.raises(BoxNotFoundError):
+        file_manager.add_file(
+            user_id=user.user_id,
+            box_id="nonexistent-box",
+            source_path=str(source_file),
+        )
