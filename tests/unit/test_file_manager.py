@@ -456,3 +456,20 @@ def test_get_file_routes_to_correct_storage_path(
     monkeypatch.setattr(file_manager.storage, "get_encrypted", lambda *a, **k: "secure")
     file_manager.encryption_enabled = True
     assert file_manager.get_file(metadata.file_id, "dest", decrypt=True) == "secure"
+
+
+def test_delete_box_removes_files_and_shares(file_manager: FileManager, tmp_path: Path) -> None:
+    """Deleting a box cascades through files and shares."""
+    owner = file_manager.create_user("zoe")
+    guest = file_manager.create_user("yuri")
+    box = file_manager.create_box(owner.user_id, "temp")
+
+    source_file = tmp_path / "t.txt"
+    source_file.write_text("bye")
+    file_manager.add_file(owner.user_id, box.box_id, str(source_file))
+    file_manager.share_box(box.box_id, owner.user_id, guest.user_id)
+
+    assert file_manager.delete_box(box.box_id) is True
+    assert file_manager.box_model.get(box.box_id) is None
+    assert file_manager.box_share_model.list_by_box(box.box_id) == []
+    assert file_manager.file_model.list_by_box(box.box_id) == []
