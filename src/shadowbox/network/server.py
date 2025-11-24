@@ -503,6 +503,9 @@ def share_with(code_to_share: str, username: str, box_name: str, permissions: st
             pass
         zeroconf.close()
 
+def share_with_everyone(box_name: str, permissions: str, db = "./shadowbox.db", storage_root = None, port = 9999):
+    share_with(code_to_share="", username="Common_username", box_name = box_name, permissions = permissions, db = db, storage_root = storage_root, port = port)
+
 
 # Main entry point (augmented with argparse)
 def main():
