@@ -130,3 +130,33 @@ def test_delete_file_updates_used_bytes(file_manager: FileManager, tmp_path: Pat
     file_manager.delete_file(metadata.file_id)
 
     assert file_manager.user_model.get(user.user_id)["used_bytes"] == 0
+
+
+def test_shared_box_write_access_allows_add_file(file_manager: FileManager, tmp_path: Path) -> None:
+    """A user with write access to a shared box can add files."""
+    owner = file_manager.create_user("owner")
+    collaborator = file_manager.create_user("collab")
+    box = file_manager.create_box(user_id=owner.user_id, box_name="shared")
+    file_manager.share_box(
+        box_id=box.box_id,
+        shared_by_user_id=owner.user_id,
+        shared_with_user_id=collaborator.user_id,
+        permission_level="write",
+    )
+
+    source_file = tmp_path / "shared.txt"
+    content = b"shared content"
+    source_file.write_bytes(content)
+
+    metadata = file_manager.add_file(
+        user_id=collaborator.user_id,
+        box_id=box.box_id,
+        source_path=str(source_file),
+        tags=["shared"],
+    )
+
+    stored = file_manager.file_model.get(metadata.file_id)
+    assert stored is not None
+    assert stored.tags == ["shared"]
+    assert stored.user_id == collaborator.user_id
+    assert file_manager.user_model.get(collaborator.user_id)["used_bytes"] == len(content)
