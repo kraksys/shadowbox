@@ -1,6 +1,8 @@
 """Unit tests covering ``FileManager`` behaviour."""
 
+import json
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict
 
@@ -10,11 +12,13 @@ from shadowbox.core.exceptions import (
     AccessDeniedError,
     BoxExistsError,
     BoxNotFoundError,
+    FileNotFoundError,
     QuotaExceededError,
     UserExistsError,
+    UserNotFoundError,
 )
 from shadowbox.core.file_manager import FileManager
-from shadowbox.core.models import Box
+from shadowbox.core.models import Box, BoxShare
 from shadowbox.core.storage import Storage
 from shadowbox.database.connection import DatabaseConnection
 
@@ -270,3 +274,185 @@ def test_update_box_error_paths(file_manager: FileManager, monkeypatch: pytest.M
 
     updated = Box(**{**box.to_dict(), "settings": "not-json"})
     assert file_manager.update_box(updated) is True
+
+
+def test_delete_and_add_file_validations(file_manager: FileManager, tmp_path: Path) -> None:
+    """Validate access checks across add/delete/share operations."""
+    with pytest.raises(BoxNotFoundError):
+        file_manager.delete_box("missing")
+
+    owner = file_manager.create_user("sam")
+    box = file_manager.create_box(owner.user_id, "restricted")
+    outsider = file_manager.create_user("tara")
+    src = tmp_path / "blocked.txt"
+    src.write_text("no access")
+
+    with pytest.raises(AccessDeniedError):
+        file_manager.add_file(outsider.user_id, box.box_id, str(src))
+
+    with pytest.raises(FileNotFoundError):
+        file_manager.get_file("missing", "dest")
+
+    with pytest.raises(BoxNotFoundError):
+        file_manager.list_box_files("missing")
+
+    with pytest.raises(BoxNotFoundError):
+        file_manager.share_box("missing", owner.user_id, outsider.user_id)
+
+    with pytest.raises(AccessDeniedError):
+        file_manager.share_box(box.box_id, outsider.user_id, owner.user_id)
+
+    first_share = file_manager.share_box(box.box_id, owner.user_id, outsider.user_id)
+    second_share = file_manager.share_box(box.box_id, owner.user_id, outsider.user_id)
+    assert first_share.share_id != second_share.share_id
+
+    with pytest.raises(BoxNotFoundError):
+        file_manager.unshare_box("missing", owner.user_id, outsider.user_id)
+
+    with pytest.raises(AccessDeniedError):
+        file_manager.unshare_box(box.box_id, outsider.user_id, owner.user_id)
+
+    assert file_manager.unshare_box(box.box_id, owner.user_id, outsider.user_id) is True
+
+
+def test_create_and_list_box_validations(file_manager: FileManager) -> None:
+    """Validate error handling when creating and listing boxes."""
+    with pytest.raises(UserNotFoundError):
+        file_manager.create_box("missing", "docs")
+
+    user = file_manager.create_user("quinn")
+    with pytest.raises(UserNotFoundError):
+        file_manager.list_user_boxes("missing")
+
+    box = file_manager.create_box(user.user_id, "docs")
+    result = file_manager.list_user_boxes(user.user_id)
+    assert {b.box_id for b in result} == {box.box_id}
+
+
+def test_get_box_info_and_enable_encryption_guard(
+    file_manager: FileManager,
+) -> None:
+    """Fetch box info and block enabling encryption without password."""
+    assert file_manager.get_box_info("missing", "missing") == {}
+
+    user = file_manager.create_user("pat")
+    box = file_manager.create_box(user.user_id, "info")
+    info = file_manager.get_box_info(user.user_id, box.box_id)
+    assert info["box_name"] == "info"
+    assert info["owner"] is True
+
+    with pytest.raises(ValueError):
+        file_manager.enable_box_encryption(user.user_id, box.box_id, "pwd")
+
+
+def test_delete_file_updates_quota_and_missing_errors(
+    file_manager: FileManager, tmp_path: Path
+) -> None:
+    """Deleting files updates quotas and handles missing identifiers."""
+    with pytest.raises(FileNotFoundError):
+        file_manager.delete_file("missing")
+
+    user = file_manager.create_user("oliver")
+    box = file_manager.create_box(user.user_id, "mix")
+    src = tmp_path / "sample.txt"
+    src.write_text("abc")
+    metadata = file_manager.add_file(user.user_id, box.box_id, str(src))
+
+    file_manager.delete_file(metadata.file_id)
+    assert file_manager.user_model.get(user.user_id)["used_bytes"] == 0
+
+
+def test_list_shared_boxes_filters_expired(file_manager: FileManager) -> None:
+    """Filter out expired shares when listing accessible boxes."""
+    owner = file_manager.create_user("maya")
+    guest = file_manager.create_user("nick")
+    other_guest = file_manager.create_user("olga")
+    box = file_manager.create_box(owner.user_id, "designs")
+
+    file_manager.share_box(box.box_id, owner.user_id, guest.user_id, permission_level="read")
+    expired_share = BoxShare(
+        box_id=box.box_id,
+        shared_by_user_id=owner.user_id,
+        shared_with_user_id=other_guest.user_id,
+        permission_level="read",
+        expires_at=datetime.utcnow() - timedelta(days=1),
+    )
+    file_manager.box_share_model.create(expired_share)
+
+    shared_boxes = file_manager.list_shared_boxes(guest.user_id)
+    assert {b.box_id for b in shared_boxes} == {box.box_id}
+    assert file_manager.list_shared_boxes(other_guest.user_id) == []
+
+
+def test_sharing_and_unsharing_flow(file_manager: FileManager) -> None:
+    """Validate sharing lifecycle including invalid permissions."""
+    owner = file_manager.create_user("kim")
+    guest = file_manager.create_user("lee")
+    box = file_manager.create_box(owner.user_id, "reports")
+
+    with pytest.raises(ValueError):
+        file_manager.share_box(
+            box.box_id,
+            owner.user_id,
+            guest.user_id,
+            permission_level="invalid",
+        )
+
+    share = file_manager.share_box(box.box_id, owner.user_id, guest.user_id)
+    assert share.permission_level == "read"
+    assert file_manager.box_model.get(box.box_id)["is_shared"]
+
+    assert file_manager.unshare_box(box.box_id, owner.user_id, guest.user_id) is True
+    assert bool(file_manager.box_model.get(box.box_id)["is_shared"]) is False
+
+
+def test_listing_functions_enforce_access_controls(
+    file_manager: FileManager, tmp_path: Path
+) -> None:
+    """Confirm listing APIs enforce share permissions and missing users."""
+    owner = file_manager.create_user("ivy")
+    guest = file_manager.create_user("jack")
+    box = file_manager.create_box(owner.user_id, "shared")
+
+    src = tmp_path / "entry.txt"
+    src.write_text("entry")
+    file_manager.add_file(owner.user_id, box.box_id, str(src))
+
+    with pytest.raises(AccessDeniedError):
+        file_manager.list_box_files(box.box_id, user_id=guest.user_id)
+
+    file_manager.share_box(
+        box.box_id,
+        owner.user_id,
+        guest.user_id,
+        permission_level="read",
+    )
+    assert file_manager.list_box_files(box.box_id, user_id=guest.user_id)
+
+    with pytest.raises(UserNotFoundError):
+        file_manager.list_user_files("missing-user")
+
+
+def test_get_file_routes_to_correct_storage_path(
+    file_manager: FileManager, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Route file retrieval through encrypted or plain storage helpers."""
+    user = file_manager.create_user("henry")
+    box = file_manager.create_box(user.user_id, "docs")
+    src = tmp_path / "info.txt"
+    src.write_text("contents")
+    metadata = file_manager.add_file(user.user_id, box.box_id, str(src))
+
+    monkeypatch.setattr(file_manager.storage, "get", lambda *a, **k: "plain")
+    assert file_manager.get_file(metadata.file_id, "dest", decrypt=False) == "plain"
+
+    encrypted = metadata.to_dict()
+    encrypted["custom_metadata"] = json.dumps({"encrypted": True})
+    file_manager.db.execute(
+        "UPDATE files SET custom_metadata = ? WHERE file_id = ?",
+        (encrypted["custom_metadata"], metadata.file_id),
+    )
+
+    monkeypatch.setattr(file_manager.storage, "get_encrypted", lambda *a, **k: "secure")
+    file_manager.encryption_enabled = True
+    assert file_manager.get_file(metadata.file_id, "dest", decrypt=True) == "secure"
