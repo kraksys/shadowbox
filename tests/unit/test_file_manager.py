@@ -2,6 +2,7 @@
 
 import sys
 from pathlib import Path
+from typing import Dict
 
 import pytest
 
@@ -13,6 +14,8 @@ from shadowbox.core.exceptions import (
     UserExistsError,
 )
 from shadowbox.core.file_manager import FileManager
+from shadowbox.core.models import Box
+from shadowbox.core.storage import Storage
 from shadowbox.database.connection import DatabaseConnection
 
 sys.path.append(str(Path(__file__).resolve().parents[2] / "src"))
@@ -179,3 +182,56 @@ def test_list_box_files_enforces_access_control(file_manager: FileManager, tmp_p
 
     with pytest.raises(AccessDeniedError):
         file_manager.list_box_files(box.box_id, user_id=outsider.user_id)
+
+
+def test_setup_encryption_calls_backend(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify master key setup is invoked when encryption is enabled."""
+    called: Dict[str, str] = {}
+
+    def fake_setup(self: Storage, password: str) -> None:
+        called["password"] = password
+
+    monkeypatch.setattr(Storage, "setup_master_key", fake_setup)
+
+    storage_root = tmp_path / "storage"
+    db_path = tmp_path / "db.sqlite"
+    db_conn = DatabaseConnection(str(db_path))
+    db_conn.initialize()
+
+    manager = FileManager(
+        str(storage_root),
+        db_conn,
+        enable_encryption=True,
+        master_password="secret",
+    )
+
+    assert manager.encryption_enabled is True
+    assert called["password"] == "secret"
+
+
+def test_create_box_duplicate_and_encrypted_settings(
+    file_manager: FileManager,
+) -> None:
+    """Create an encrypted box and confirm duplicates are rejected."""
+    user = file_manager.create_user("alice")
+    secure_box = file_manager.create_box(
+        user.user_id, "vault", enable_encryption=True, description="private"
+    )
+
+    assert secure_box.settings["encryption_enabled"] is True
+
+    with pytest.raises(BoxExistsError):
+        file_manager.create_box(user.user_id, "vault")
+
+
+def test_update_box_rejects_encryption_change(
+    file_manager: FileManager,
+) -> None:
+    """Reject attempts to toggle encryption via update payload."""
+    user = file_manager.create_user("bob")
+    box = file_manager.create_box(user.user_id, "docs")
+
+    mutated = Box(**{**box.to_dict(), "settings": {"encryption_enabled": True}})
+
+    with pytest.raises(ValueError):
+        file_manager.update_box(mutated)
