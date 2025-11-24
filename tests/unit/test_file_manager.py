@@ -2,7 +2,7 @@
 
 import sys
 from pathlib import Path
-from typing import Dict
+from typing import Any, Dict
 
 import pytest
 
@@ -249,3 +249,24 @@ def test_list_shared_boxes_skips_irrelevant(file_manager: FileManager) -> None:
 
     boxes_for_viewer = file_manager.list_shared_boxes(viewer.user_id)
     assert {b.box_id for b in boxes_for_viewer} == {box.box_id}
+
+
+def test_update_box_error_paths(file_manager: FileManager, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Cover malformed settings and storage failures during update."""
+    with pytest.raises(BoxNotFoundError):
+        file_manager.update_box(Box(box_id="missing", user_id="nope", box_name="ghost"))
+
+    user = file_manager.create_user("riley")
+    box = file_manager.create_box(user.user_id, "projects")
+    file_manager.db.execute(
+        "UPDATE boxes SET settings = ? WHERE box_id = ?",
+        ("not-json", box.box_id),
+    )
+
+    def blow_up(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(file_manager.storage, "set_box_encryption_enabled", blow_up)
+
+    updated = Box(**{**box.to_dict(), "settings": "not-json"})
+    assert file_manager.update_box(updated) is True
