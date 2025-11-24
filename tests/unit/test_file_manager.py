@@ -8,6 +8,7 @@ import pytest
 from shadowbox.core.exceptions import (
     BoxExistsError,
     BoxNotFoundError,
+    QuotaExceededError,
     UserExistsError,
 )
 from shadowbox.core.file_manager import FileManager
@@ -90,5 +91,21 @@ def test_add_file_requires_existing_box(file_manager: FileManager, tmp_path: Pat
         file_manager.add_file(
             user_id=user.user_id,
             box_id="nonexistent-box",
+            source_path=str(source_file),
+        )
+
+
+def test_add_file_respects_quota(file_manager: FileManager, tmp_path: Path) -> None:
+    """Adding a file that exceeds the user's quota raises an error."""
+    user = file_manager.create_user("quincy")
+    file_manager.db.execute("UPDATE users SET quota_bytes = ? WHERE user_id = ?", (5, user.user_id))
+    box = file_manager.create_box(user_id=user.user_id, box_name="tiny")
+    source_file = tmp_path / "oversized.bin"
+    source_file.write_bytes(b"0123456789")
+
+    with pytest.raises(QuotaExceededError):
+        file_manager.add_file(
+            user_id=user.user_id,
+            box_id=box.box_id,
             source_path=str(source_file),
         )
