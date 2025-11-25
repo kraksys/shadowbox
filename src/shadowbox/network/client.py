@@ -28,8 +28,12 @@ import socket
 import time  # not in use so far
 import threading
 from zeroconf import Zeroconf, ServiceBrowser, ServiceInfo
-
 SERVICE_TYPE = "_shadowbox._tcp.local."
+
+def set_code(code):
+    global SERVICE_TYPE
+    SERVICE_TYPE = f"_shadowbox{code}._tcp.local."
+
 DISCOVER_TIMEOUT = 8.0  # seconds to wait for service discovery
 READ_BUF = 4096
 
@@ -168,12 +172,38 @@ def connect_and_request(ip, port, request_line, recv_file=False, out_path=None, 
             return {"status": "ok", "text": data}
 
 
+def get_server_address(code: str, timeout: float = 5.0):
+    """
+    Discover a server with a specific code suffix (e.g., "icmf" -> _shadowboxicmf._tcp.local.).
+
+    Args:
+        code (str): The specific letter/code to look for
+        timeout (float): How long to wait for discovery
+
+    Returns:
+        tuple: (ip, port) if found
+        None: If no server is found
+    """
+    # Construct the service type string dynamically
+    service_type = f"_shadowbox{code}._tcp.local."
+
+    finder = ServiceFinder(service_type=service_type, timeout=timeout)
+    info = finder.wait_for_service()
+    finder.close()
+
+    if info:
+        return info['ip'], info['port']
+    return None
+
+
+
 def cmd_list(ip, port):
     res = connect_and_request(ip, port, "LIST")
     if res["status"] == "ok":
         print(res["text"])
     else:
         print("Error:", res)
+    return res
 
 
 def cmd_get(ip, port, filename, out_path=None):
@@ -186,6 +216,7 @@ def cmd_get(ip, port, filename, out_path=None):
         # TODO: find a better way to handle this error
         os.remove(out_path)  # !!! This can delete an existing file, but it'd be a corrupted one so it's fine
     print(res)
+    return res
 
 
 def cmd_put(ip, port, local_path, remote_name=None, timeout=60):
@@ -299,6 +330,14 @@ def cmd_box(ip, port, namespaced_box):
     res = connect_and_request(ip, port, f"BOX {namespaced_box}")
     print(res.get("text", res.get("error")).strip())
 
+def cmd_check_available_boxes(ip, port):
+    pass
+    #some logic to see if there is a server responding
+
+def cmd_stop(ip, port):
+    res = connect_and_request(ip, port, f"STOP")
+    print(res["text"].strip())
+
 def main(argv):
     if len(argv) <= 1:
         cmd = "LIST"
@@ -307,7 +346,7 @@ def main(argv):
         cmd = argv[1].upper()
         args = argv[2:]
 
-    finder = ServiceFinder()
+    finder = ServiceFinder(service_type=SERVICE_TYPE)
     try:
         print(f"Searching for Zeroconf services of type {SERVICE_TYPE} (timeout {DISCOVER_TIMEOUT}s)...")
         info = finder.wait_for_service()
@@ -362,6 +401,8 @@ def main(argv):
                 return 1
             namespaced_box = args[0]
             cmd_box(ip, port, namespaced_box)
+        elif cmd == "STOP":
+            cmd_stop(ip, port)
         else:
             print("Unknown command:", cmd)
             return 1

@@ -47,6 +47,8 @@ import sys
 import argparse
 import random
 import string
+import time
+
 from zeroconf import Zeroconf, ServiceInfo
 
 from .adapter import init_env, format_list, open_for_get, finalize_put, delete_filename, select_box, list_boxes, share_box, list_available_users, list_shared_with_user
@@ -55,6 +57,8 @@ SERVICE_TYPE = "_shadowbox._tcp.local."
 file_locks = {}
 file_locks_lock = threading.Lock()
 
+GLOBAL_LISTENING_SOCKET = None
+SERVER_SHOULD_STOP = threading.Event()
 
 def get_file_lock(path):
     """Return a Lock object for a given path."""
@@ -93,13 +97,7 @@ def get_local_ip():
         s.close()
 
 
-def send_json(conn, data):
-    """Helper to send a python dict/list as a newline-terminated JSON string."""
-    try:
-        payload = json.dumps(data)
-        conn.sendall((payload + "\n").encode())
-    except Exception as e:
-        print(f"Error sending JSON: {e}")
+
 
 def handle_client(conn, addr, context):
     """Handle a single client connection."""
@@ -395,6 +393,11 @@ def handle_client(conn, addr, context):
                 conn.sendall(response.encode())
             else:
                 conn.sendall(b"ERROR: Command only available in core mode\n")
+        elif line.upper() == "STOP":
+            conn.sendall(b"OK: Server is shutting down.\n")
+            stop_server()
+
+
         else:
             msg = "ERROR - Unknown command\n"
             conn.sendall(msg.encode())
@@ -410,18 +413,43 @@ def handle_client(conn, addr, context):
 
 def start_tcp_server(context, port):
     """Start a simple threaded TCP server."""
+    global GLOBAL_LISTENING_SOCKET, SERVER_SHOULD_STOP
+
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.bind(("", port))
     s.listen(5)
+
+    GLOBAL_LISTENING_SOCKET = s
+    SERVER_SHOULD_STOP.clear()
     if context["mode"] == "test":
         print(f"TCP server listening on port {port}, serving '{context['shared_dir']}'")
     else: 
         print(f"TCP server listening on port {port}, core mode (DB+Storage)")
-    while True:
-        conn, addr = s.accept()
-        t = threading.Thread(target=handle_client, args=(conn, addr, context), daemon=True)
-        t.start()
+    while not SERVER_SHOULD_STOP.is_set():
+        try:
+            # Use a short timeout so the loop can periodically check the SERVER_SHOULD_STOP flag
+            s.settimeout(0.5)
+            conn, addr = s.accept()
+            s.settimeout(None)  # Clear timeout after connection is accepted
+            t = threading.Thread(target=handle_client, args=(conn, addr, context), daemon=True)
+            t.start()
+        except socket.timeout:
+            continue  # Timeout occurred, loop back to check SERVER_SHOULD_STOP
+        except Exception as e:
+            # This handles the exception raised when GLOBAL_LISTENING_SOCKET.close() is called in stop_server()
+            if not SERVER_SHOULD_STOP.is_set():
+                print(f"Unexpected error in server loop: {e}")
+            break  # Exit the loop when the socket is closed
+
+        # Cleanup after loop breaks
+    if GLOBAL_LISTENING_SOCKET:
+        try:
+            GLOBAL_LISTENING_SOCKET.close()
+        except Exception:
+            pass
+        GLOBAL_LISTENING_SOCKET = None
+    print("TCP server listener stopped.")
 
 
 # Zeroconf advertisement
@@ -485,6 +513,7 @@ def share_with(code_to_share: str, username: str, box_name: str, permissions: st
 
     #from adapter
     share_box(context["env"], box_name, username, permissions)
+    select_box(env, box_name)
 
     #broadcast it on the mDNS
     zeroconf, info = advertise_service(name, port, service=SERVICE_TYPE)
@@ -505,6 +534,29 @@ def share_with(code_to_share: str, username: str, box_name: str, permissions: st
 
 def share_with_everyone(box_name: str, permissions: str, db = "./shadowbox.db", storage_root = None, port = 9999):
     share_with(code_to_share="", username="Common_username", box_name = box_name, permissions = permissions, db = db, storage_root = storage_root, port = port)
+
+
+def stop_server():
+    """
+    Stops the main TCP listening socket and signals the server thread to shut down.
+    This is intended to be called internally or externally.
+    """
+    global GLOBAL_LISTENING_SOCKET, SERVER_SHOULD_STOP
+
+    if not GLOBAL_LISTENING_SOCKET:
+        print("Server socket is already closed or not initialized.")
+        return
+
+    print("Signaling server shutdown...")
+    SERVER_SHOULD_STOP.set()
+
+    # Closing the socket will interrupt the blocking s.accept() call in start_tcp_server,
+    # causing it to raise an exception break the while loop.
+    try:
+        GLOBAL_LISTENING_SOCKET.close()
+    except Exception as e:
+        print(f"Error closing server socket: {e}")
+
 
 
 # Main entry point (augmented with argparse)
