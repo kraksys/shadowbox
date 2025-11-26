@@ -28,16 +28,19 @@ def init_env(db_path="./shadowbox.db", storage_root=None, username=None):
     # Ensure default box for this user
     bm = BoxModel(db)
     default_box = None
+    box_id = None
     for box in bm.list_by_user(user_id) or []:
         if box.get("box_name") == "default":
             default_box = box
             break
-    if not default_box:
-        default = Box(user_id=user_id, box_name="default", description="Default box")
-        bm.create(default)
-        default_box = bm.get(default.box_id)
+    # if not default_box:
+    #     default = Box(user_id=user_id, box_name="default", description="Default box")
+    #     bm.create(default)
+    #     default_box = bm.get(default.box_id)
+    if default_box:
+        box_id = default_box["box_id"]
 
-    return {"db": db, "storage": storage, "username": uname, "user_id": user_id, "box_id": default_box["box_id"]}
+    return {"db": db, "storage": storage, "username": uname, "user_id": user_id, "box_id": box_id}
 
 
 def check_permission(env, box_id, required_permission="read") -> bool:
