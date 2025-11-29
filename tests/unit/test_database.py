@@ -1,20 +1,20 @@
 """Unit tests covering ``DatabaseConnection`` and database models."""
 
 import tempfile
-
-# from datetime import datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Generator, TypedDict
 
 import pytest
 
-from shadowbox.core.models import Box  # BoxShare, FileMetadata, FileStatus, FileType
+from shadowbox.core.models import Box, BoxShare, FileMetadata, FileStatus, FileType
 from shadowbox.database.connection import DatabaseConnection
-from shadowbox.database.models import (  # row_to_metadata,
+from shadowbox.database.models import (
     BoxModel,
     BoxShareModel,
     FileModel,
     UserModel,
+    row_to_metadata,
 )
 from shadowbox.database.schema import SCHEMA_VERSION, get_drop_schema
 
@@ -137,3 +137,135 @@ def test_user_and_box_models(models: ModelBundle) -> None:
 
     assert users.delete("user-1") is True
     assert users.get("user-1") is None
+
+
+def _make_metadata(user_id: str, box_id: str, **overrides: object) -> FileMetadata:
+    """Build ``FileMetadata`` instances with overrides for test scenarios."""
+    base = {
+        "file_id": "file-1",
+        "box_id": box_id,
+        "filename": "report.txt",
+        "original_path": "/tmp/report.txt",
+        "size": 1024,
+        "file_type": FileType.DOCUMENT,
+        "mime_type": "text/plain",
+        "hash_sha256": "hash1",
+        "created_at": datetime.utcnow(),
+        "modified_at": datetime.utcnow(),
+        "accessed_at": datetime.utcnow(),
+        "user_id": user_id,
+        "owner": user_id,
+        "status": FileStatus.ACTIVE,
+        "version": 1,
+        "parent_version_id": None,
+        "tags": ["work", "urgent"],
+        "description": "Quarterly report",
+        "custom_metadata": {"category": "finance"},
+    }
+    base.update(overrides)
+    return FileMetadata(**base)
+
+
+def test_file_model_crud_and_tag_management(models: ModelBundle) -> None:
+    """Cover file creation, updates, listing filters, and bulk insert guard."""
+    files = models["files"]
+    users = models["users"]
+    boxes = models["boxes"]
+
+    users.create("user-1", "alpha")
+    box = Box(user_id="user-1", box_name="Docs", description="Primary box")
+    boxes.create(box)
+
+    metadata = _make_metadata("user-1", box.box_id)
+    files.create(metadata)
+
+    fetched = files.get(metadata.file_id)
+    assert fetched.tags == ["work", "urgent"]
+    assert fetched.custom_metadata == {"category": "finance"}
+
+    metadata.filename = "report-final.txt"
+    metadata.size = 2048
+    metadata.tags = ["work", "final"]
+    metadata.status = FileStatus.ARCHIVED
+    files.update(metadata)
+
+    updated = files.get(metadata.file_id)
+    assert updated.filename == "report-final.txt"
+    assert set(updated.tags) == {"work", "final"}
+    assert updated.status is FileStatus.ARCHIVED
+
+    metadata_deleted = _make_metadata(
+        "user-1",
+        box.box_id,
+        file_id="file-2",
+        filename="old.txt",
+        status=FileStatus.DELETED,
+        tags=["old"],
+    )
+    files.create(metadata_deleted)
+
+    active_files = files.list_by_user("user-1")
+    assert all(f.status is not FileStatus.DELETED for f in active_files)
+
+    deleted_included = files.list_by_user("user-1", include_deleted=True)
+    assert any(f.file_id == "file-2" for f in deleted_included)
+
+    box_files = files.list_by_box(box.box_id, include_deleted=True)
+    assert {f.file_id for f in box_files} >= {"file-1", "file-2"}
+
+
+def test_row_to_metadata_handles_strings_and_invalid_json() -> None:
+    """Parse metadata rows with string timestamps and invalid JSON payloads."""
+    row = {
+        "file_id": "file-1",
+        "box_id": "box-1",
+        "filename": "note.txt",
+        "original_path": "/tmp/note.txt",
+        "size": 10,
+        "file_type": "other",
+        "mime_type": "text/plain",
+        "hash_sha256": "abc",
+        "created_at": datetime.utcnow().isoformat(),
+        "modified_at": datetime.utcnow().isoformat(),
+        "accessed_at": datetime.utcnow().isoformat(),
+        "user_id": "user-1",
+        "owner": "user-1",
+        "status": "active",
+        "version": 1,
+        "parent_version_id": None,
+        "description": None,
+        "custom_metadata": "not-json",
+    }
+
+    metadata = row_to_metadata(row, ["tag1"])
+    assert metadata.custom_metadata == {}
+    assert metadata.tags == ["tag1"]
+
+
+def test_box_shares_access_rules(models: ModelBundle) -> None:
+    """Verify share creation, access checks, token lookups, and deletion."""
+    users = models["users"]
+    boxes = models["boxes"]
+    shares = models["shares"]
+
+    users.create("owner", "owner")
+    users.create("guest", "guest")
+    box = Box(user_id="owner", box_name="Shared", description="shareable")
+    boxes.create(box)
+
+    share = BoxShare(
+        share_id="share-1",
+        box_id=box.box_id,
+        shared_by_user_id="owner",
+        shared_with_user_id="guest",
+        permission_level="read",
+        expires_at=None,
+        access_token="token-123",
+    )
+    shares.create(share)
+
+    assert shares.has_access(box.box_id, "guest") is True
+    assert shares.has_access(box.box_id, "guest", permission_level="write") is False
+    assert shares.get_by_access_token("token-123")["share_id"] == "share-1"
+    assert shares.delete(share.share_id) is True
+    assert shares.get(share.share_id) is None
