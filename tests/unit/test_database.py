@@ -53,3 +53,36 @@ def test_initialize_is_idempotent(temp_db: DatabaseConnection) -> None:
         temp_db.execute(statement)
 
     assert temp_db.get_version() == 0
+
+
+def test_transaction_context_commit_and_rollback(temp_db: DatabaseConnection) -> None:
+    """Validate commit and rollback behaviour of transaction context manager."""
+    with temp_db.get_transaction_context() as cursor:
+        cursor.execute(
+            "INSERT INTO users (user_id, username) VALUES (?, ?)",
+            ("user-1", "alpha"),
+        )
+
+    assert (
+        temp_db.fetch_one(
+            "SELECT username FROM users WHERE user_id = ?",
+            ("user-1",),
+        )["username"]
+        == "alpha"
+    )
+
+    with pytest.raises(ValueError):
+        with temp_db.get_transaction_context() as cursor:
+            cursor.execute(
+                "INSERT INTO users (user_id, username) VALUES (?, ?)",
+                ("user-2", "beta"),
+            )
+            raise ValueError("force rollback")
+
+    assert (
+        temp_db.fetch_one(
+            "SELECT username FROM users WHERE user_id = ?",
+            ("user-2",),
+        )
+        is None
+    )
