@@ -504,6 +504,7 @@ def share_with(code_to_share: str, username: str, box_name: str, permissions: st
 
     #create the env that we will use for the server
     env = init_env(db_path=db, storage_root=storage_root, username=username)
+    # {"db": db, "storage": storage, "username": uname, "user_id": user_id, "box_id": default_box["box_id"]}
     context = {"mode": "core", "env": env}
     name = f"FileServer-{socket.gethostname()}"
 
@@ -605,4 +606,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    #main()
+    share_with("","Tery","Atanas/default", "read")
