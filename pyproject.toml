@@ -68,6 +68,3 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["shadowbox*"]
-
-[project.scripts]
-shadowbox = "shadowbox.cli:cli"
