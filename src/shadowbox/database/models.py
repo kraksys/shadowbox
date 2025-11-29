@@ -1,74 +1,36 @@
-"""
-    ORM query builders for all db ops 
-"""
+"""ORM-style helpers for database operations."""
 
 from typing import Optional, List, Dict, Any, Union
 from datetime import datetime
 import json
-
 from .connection import DatabaseConnection
-from ..core.models import FileMetadata, FileType, FileStatus
+from ..core.models import FileMetadata, FileType, FileStatus, Box, BoxShare
 from ..core.exceptions import StorageError
 
 
 class BaseModel:
-    """
-        Base class for db models
-    """
+    """Base class for DB models."""
 
-    __slots__ = ('db',)
+    __slots__ = ("db",)
 
     def __init__(self, db):
-        """
-            Initialize model
-
-            Args:
-                db: DatabaseConnection instance
-        """
+        """Initialize with a DatabaseConnection."""
         self.db = db
 
     def _serialize_json(self, data):
-        """
-            Serialize data to JSON
-
-            Args:
-                data: Data to serialize
-
-            Returns:
-                JSON string or None
-        """
+        """Serialize Python data to JSON string."""
         return json.dumps(data) if data else None
 
     def _deserialize_json(self, data):
-        """
-            Deserialize JSON to data.
-
-            Args:
-                data: JSON string
-
-            Returns:
-                Deserialized data or None
-        """
+        """Deserialize JSON string to Python data."""
         return json.loads(data) if data else None
 
 
 class UserModel(BaseModel):
-    """
-        DB model for users
-    """
+    """DB model for users."""
 
     def create(self, user_id, username, quota_bytes=10737418240):
-        """
-            Create a new user
-
-            Args:
-                user_id: User identifier
-                username: Custom username that can be selected 
-                quota_bytes: Maximum allowable storage a user can have (10GB) 
-
-            Returns:
-                User dictionary
-        """
+        """Create a user and return it."""
         query = """
             INSERT INTO users (user_id, username, quota_bytes)
             VALUES (?, ?, ?)
@@ -78,88 +40,222 @@ class UserModel(BaseModel):
         return self.get(user_id)
 
     def get(self, user_id):
-        """
-            Get user by ID
-
-            Args:
-                user_id: User identifier
-
-            Returns:
-                User dict or None
-        """
+        """Get user by ID."""
         query = "SELECT * FROM users WHERE user_id = ?"
         return self.db.fetch_one(query, (user_id,))
 
     def get_by_username(self, username):
-        """
-            Get user by username
-
-            Args:
-                username: Username
-
-            Returns:
-                User dict or None
-        """
+        """Get user by username."""
         query = "SELECT * FROM users WHERE username = ?"
         return self.db.fetch_one(query, (username,))
 
     def update_quota(self, user_id, used_bytes):
-        """
-            Update user's quota
-
-            Args:
-                user_id: User identifier
-                used_bytes: Number of bytes used
-
-            Returns:
-                True if successful
-        """
+        """Update a user's used_bytes quota value."""
         query = "UPDATE users SET used_bytes = ? WHERE user_id = ?"
         self.db.execute(query, (used_bytes, user_id))
         return True
 
     def delete(self, user_id):
-        """
-            Delete user
-
-            Args:
-                user_id: User identifier
-
-            Returns:
-                True if successful
-        """
+        """Delete user by ID."""
         query = "DELETE FROM users WHERE user_id = ?"
         self.db.execute(query, (user_id,))
         return True
 
 
-class FileModel(BaseModel):
-    """
-        DB model for files
-    """
+class BoxModel(BaseModel):
+    """DB model for boxes."""
 
-    def create(self, metadata):
+    def create(self, box):
+        """Create a box and return it."""
+        query = """
+            INSERT INTO boxes (box_id, user_id, box_name, description, is_shared, share_token, settings)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         """
-            Create file record
 
-            Args:
-                metadata: FileMetadata object
+        params = (
+            box.box_id,
+            box.user_id,
+            box.box_name,
+            box.description,
+            box.is_shared,
+            box.share_token,
+            self._serialize_json(box.settings),
+        )
 
-            Returns:
-                File ID
+        self.db.execute(query, params)
+        return self.get(box.box_id)
+
+    def get(self, box_id):
+        """Get box by ID."""
+        query = "SELECT * FROM boxes WHERE box_id = ?"
+        return self.db.fetch_one(query, (box_id,))
+
+    def get_by_share_token(self, share_token):
+        """Get box by share token."""
+        query = "SELECT * FROM boxes WHERE share_token = ?"
+        return self.db.fetch_one(query, (share_token,))
+
+    def list_by_user(self, user_id):
+        """List all boxes for a user."""
+        query = "SELECT * FROM boxes WHERE user_id = ? ORDER BY created_at DESC"
+        return self.db.fetch_all(query, (user_id,))
+
+    def update(self, box):
+        """Update a box."""
+        query = """
+            UPDATE boxes SET
+                box_name = ?,
+                description = ?,
+                is_shared = ?,
+                settings = ?
+            WHERE box_id = ?
+        """
+
+        params = (
+            box.box_name,
+            box.description,
+            box.is_shared,
+            self._serialize_json(box.settings),
+            box.box_id,
+        )
+
+        self.db.execute(query, params)
+        return True
+
+    def delete(self, box_id):
+        """Delete box by ID (cascades to files and shares)."""
+        query = "DELETE FROM boxes WHERE box_id = ?"
+        self.db.execute(query, (box_id,))
+        return True
+
+    def set_shared(self, box_id, is_shared=True):
+        """Set box sharing status."""
+        query = "UPDATE boxes SET is_shared = ? WHERE box_id = ?"
+        self.db.execute(query, (is_shared, box_id))
+        return True
+
+
+class BoxShareModel(BaseModel):
+    """DB model for box shares."""
+
+    def create(self, share):
+        """Create a box share and return it."""
+        query = """
+            INSERT INTO box_shares (share_id, box_id, shared_by_user_id, shared_with_user_id, 
+                                  permission_level, expires_at, access_token)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """
+
+        params = (
+            share.share_id,
+            share.box_id,
+            share.shared_by_user_id,
+            share.shared_with_user_id,
+            share.permission_level,
+            share.expires_at,
+            share.access_token,
+        )
+
+        self.db.execute(query, params)
+        return self.get(share.share_id)
+
+    def update(self, share):
+        """
+        Update box share
+
+        Args:
+            share: BoxShare instance with updated data
+
+        Returns:
+            True if successful
         """
         query = """
+            UPDATE box_shares SET
+                permission_level = ?,
+                expires_at = ?
+            WHERE share_id = ?
+        """
+
+        params = (
+            share.permission_level,
+            share.expires_at,
+            share.share_id,
+        )
+
+        self.db.execute(query, params)
+        return True
+
+    def get(self, share_id):
+        """Get share by ID."""
+        query = "SELECT * FROM box_shares WHERE share_id = ?"
+        return self.db.fetch_one(query, (share_id,))
+
+    def get_by_access_token(self, access_token):
+        """Get share by access token."""
+        query = "SELECT * FROM box_shares WHERE access_token = ?"
+        return self.db.fetch_one(query, (access_token,))
+
+    def list_by_box(self, box_id):
+        """List all shares for a box."""
+        query = "SELECT * FROM box_shares WHERE box_id = ?"
+        return self.db.fetch_all(query, (box_id,))
+
+    def list_by_user(self, user_id):
+        """List all shares for a user (shared by/with)."""
+        query = """
+            SELECT * FROM box_shares 
+            WHERE shared_by_user_id = ? OR shared_with_user_id = ?
+        """
+        return self.db.fetch_all(query, (user_id, user_id))
+
+    def has_access(self, box_id, user_id, permission_level="read"):
+        """Return True if user has at least the given permission on box."""
+        query = """
+            SELECT COUNT(*) as count FROM box_shares
+            WHERE box_id = ? AND shared_with_user_id = ?
+            AND permission_level IN ('admin', 'write', 'read')
+            AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+        """
+        
+        if permission_level == "write":
+            query = query.replace("IN ('admin', 'write', 'read')", "IN ('admin', 'write')")
+        elif permission_level == "admin":
+            query = query.replace("IN ('admin', 'write', 'read')", "= 'admin'")
+
+        result = self.db.fetch_one(query, (box_id, user_id))
+        return result['count'] > 0
+
+    def delete(self, share_id):
+        """Delete share by ID."""
+        query = "DELETE FROM box_shares WHERE share_id = ?"
+        self.db.execute(query, (share_id,))
+        return True
+
+    def delete_by_box_and_user(self, box_id, user_id):
+        """Delete share by box and user."""
+        query = "DELETE FROM box_shares WHERE box_id = ? AND shared_with_user_id = ?"
+        self.db.execute(query, (box_id, user_id))
+        return True
+
+
+class FileModel(BaseModel):
+    """DB model for files."""
+
+    def create(self, metadata):
+        """Create a file record and return its ID."""
+        query = """
             INSERT INTO files (
-                file_id, user_id, filename, original_path, size,
+                file_id, user_id, box_id, filename, original_path, size,
                 file_type, mime_type, hash_sha256, created_at,
                 modified_at, accessed_at, owner, status, version,
                 parent_version_id, description, custom_metadata) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
 
         params = (
             metadata.file_id,
             metadata.user_id,
+            metadata.box_id,
             metadata.filename,
             metadata.original_path,
             metadata.size,
@@ -183,17 +279,50 @@ class FileModel(BaseModel):
             self._add_tags(metadata.file_id, metadata.tags)
 
         return metadata.file_id
+    
+    def create_many(self, metadata_list):
+        """ Bulk insert multiple file records in a single transaction. """
+        if not metadata_list:
+            return
+
+        query = """
+            INSERT INTO files (
+                file_id, user_id, box_id, filename, original_path, size,
+                file_type, mime_type, hash_sha256, created_at,
+                modified_at, accessed_at, owner, status, version,
+                parent_version_id, description, custom_metadata) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+
+        params_list = []
+        for meta in metadata_list:
+            params_list.append((
+                meta.file_id,
+                meta.user_id,
+                meta.box_id,
+                meta.filename,
+                meta.original_path,
+                meta.size,
+                meta.file_type.value,
+                meta.mime_type,
+                meta.hash_sha256,
+                meta.created_at,
+                meta.modified_at,
+                meta.accessed_at,
+                meta.owner,
+                meta.status.value,
+                meta.version,
+                meta.parent_version_id,
+                meta.description,
+                self._serialize_json(meta.custom_metadata),
+            ))
+
+        self.db.execute_many(query, params_list)
+        return True
+
 
     def get(self, file_id):
-        """
-            Get file by ID
-
-            Args:
-                file_id: File identifier
-
-            Returns:
-                FileMetadata or None
-        """
+        """Get FileMetadata by ID or None."""
         query = "SELECT * FROM files WHERE file_id = ?"
         row = self.db.fetch_one(query, (file_id,))
 
@@ -205,18 +334,7 @@ class FileModel(BaseModel):
         return row_to_metadata(row, tags)
 
     def list_by_user(self, user_id, include_deleted=False, limit=None, offset=0):
-        """
-            List files for a user
-
-            Args:
-                user_id: User identifier
-                include_deleted: Whether to include deleted files
-                limit: Maximum number of results
-                offset: Result offset for pagination
-
-            Returns:
-                List of FileMetadata objects
-        """
+        """List files for a user with optional filters."""
         query = "SELECT * FROM files WHERE user_id = ?"
         params = [user_id]
 
@@ -232,21 +350,13 @@ class FileModel(BaseModel):
 
         result = []
         for row in rows:
-            tags = self._get_tags(row['file_id'])
+            tags = self._get_tags(row["file_id"])
             result.append(row_to_metadata(row, tags))
 
         return result
 
     def update(self, metadata):
-        """
-            Update file record
-
-            Args:
-                metadata: FileMetadata object
-
-            Returns:
-                True if successful
-        """
+        """Update a file record and its tags."""
         query = """
             UPDATE files SET
                 filename = ?,
@@ -283,16 +393,7 @@ class FileModel(BaseModel):
         return True
 
     def delete(self, file_id, soft=True):
-        """
-            Delete file record
-
-            Args:
-                file_id: File identifier
-                soft: If True soft delete (which keeps the record, allows undo), if False permanent delete (which deletes the record, disallows undo)
-
-            Returns:
-                True if successful
-        """
+        """Soft-delete or permanently delete a file record."""
         if soft:
             query = "UPDATE files SET status = 'deleted' WHERE file_id = ?"
         else:
@@ -302,17 +403,74 @@ class FileModel(BaseModel):
         return True
 
     def find_by_hash(self, hash_sha256):
-        """
-            Find files with matching hash
-
-            Args:
-                hash_sha256: SHA-256 hash to search for
-
-            Returns:
-                List of FileMetadata objects
-        """
+        """Find files with the given SHA-256 hash."""
         query = "SELECT * FROM files WHERE hash_sha256 = ?"
         rows = self.db.fetch_all(query, (hash_sha256,))
+
+        result = []
+        for row in rows:
+            tags = self._get_tags(row["file_id"])
+            result.append(row_to_metadata(row, tags))
+
+        return result
+
+    def _add_tags(self, file_id, tags):
+        """Add tags to a file."""
+        for tag in tags:
+            tag_id = self._get_or_create_tag(tag)
+
+            query = "INSERT OR IGNORE INTO file_tags (file_id, tag_id) VALUES (?, ?)"
+            self.db.execute(query, (file_id, tag_id))
+
+    def _update_tags(self, file_id, tags):
+        """Replace tags for a file."""
+        self.db.execute("DELETE FROM file_tags WHERE file_id = ?", (file_id,))
+
+        if tags:
+            self._add_tags(file_id, tags)
+
+    def _get_tags(self, file_id):
+        """Return tag names for a file."""
+        query = """
+            SELECT t.tag_name
+            FROM tags t
+            JOIN file_tags ft ON t.tag_id = ft.tag_id
+            WHERE ft.file_id = ?
+        """
+
+        rows = self.db.fetch_all(query, (file_id,))
+        return [row["tag_name"] for row in rows]
+
+    def _get_or_create_tag(self, tag_name):
+        """Return tag_id for name, creating the tag if missing."""
+        query = "SELECT tag_id FROM tags WHERE tag_name = ?"
+        row = self.db.fetch_one(query, (tag_name,))
+
+        if row:
+            return row["tag_id"]
+
+        query = "INSERT INTO tags (tag_name) VALUES (?)"
+        self.db.execute(query, (tag_name,))
+
+        row = self.db.fetch_one(
+            "SELECT tag_id FROM tags WHERE tag_name = ?", (tag_name,)
+        )
+        return row["tag_id"]
+
+    def list_by_box(self, box_id, include_deleted=False, limit=None, offset=0):
+        """List files in a box with optional filters."""
+        query = "SELECT * FROM files WHERE box_id = ?"
+        params = [box_id]
+
+        if not include_deleted:
+            query += " AND status != 'deleted'"
+
+        query += " ORDER BY created_at DESC"
+
+        if limit:
+            query += f" LIMIT {limit} OFFSET {offset}"
+
+        rows = self.db.fetch_all(query, tuple(params))
 
         result = []
         for row in rows:
@@ -321,123 +479,102 @@ class FileModel(BaseModel):
 
         return result
 
-    def _add_tags(self, file_id, tags):
-        """
-            Add tags to a file
+    def list_by_user_and_box(self, user_id, box_id, include_deleted=False):
+        """List files for a user in a specific box."""
+        query = "SELECT * FROM files WHERE user_id = ? AND box_id = ?"
+        params = [user_id, box_id]
 
-            Args:
-                file_id: File identifier
-                tags: List of tag names
-        """
-        for tag in tags:
-            tag_id = self._get_or_create_tag(tag)
+        if not include_deleted:
+            query += " AND status != 'deleted'"
 
-            query = "INSERT OR IGNORE INTO file_tags (file_id, tag_id) VALUES (?, ?)"
-            self.db.execute(query, (file_id, tag_id))
+        query += " ORDER BY created_at DESC"
 
-    def _update_tags(self, file_id, tags):
-        """
-            Update file tags
+        rows = self.db.fetch_all(query, tuple(params))
 
-            Args:
-                file_id: File identifier
-                tags: List of tag names
-        """
-        self.db.execute("DELETE FROM file_tags WHERE file_id = ?", (file_id,))
+        result = []
+        for row in rows:
+            tags = self._get_tags(row['file_id'])
+            result.append(row_to_metadata(row, tags))
 
-        if tags:
-            self._add_tags(file_id, tags)
-
-    def _get_tags(self, file_id):
-        """
-            Get tags for a file
-
-            Args:
-                file_id: File identifier
-
-            Returns:
-                List of tag names
-        """
-        query ="""
-            SELECT t.tag_name
-            FROM tags t
-            JOIN file_tags ft ON t.tag_id = ft.tag_id
-            WHERE ft.file_id = ?
-        """
-
-        rows = self.db.fetch_all(query, (file_id,))
-        return [row['tag_name'] for row in rows]
-
-    def _get_or_create_tag(self, tag_name):
-        """
-            Get or create a tag
-
-            Args:
-                tag_name: Tag name
-
-            Returns:
-                Tag ID
-        """
-        query = "SELECT tag_id FROM tags WHERE tag_name = ?"
-        row = self.db.fetch_one(query, (tag_name,))
-
-        if row:
-            return row['tag_id']
-
-        query = "INSERT INTO tags (tag_name) VALUES (?)"
-        self.db.execute(query, (tag_name,))
-
-        row = self.db.fetch_one("SELECT tag_id FROM tags WHERE tag_name = ?", (tag_name,))
-        return row['tag_id']
+        return result
 
 
 def row_to_metadata(row, tags):
-    """
-        Convert db row to FileMetadata
-
-        Args:
-            row: db row dictionary
-            tags: List of tag names
-
-        Returns:
-            FileMetadata object
-    """
-    created_at = row['created_at']
+    """Convert a row dict + tag list to FileMetadata."""
+    created_at = row["created_at"]
     if isinstance(created_at, str):
         created_at = datetime.fromisoformat(created_at)
 
-    modified_at = row['modified_at']
+    modified_at = row["modified_at"]
     if isinstance(modified_at, str):
         modified_at = datetime.fromisoformat(modified_at)
 
-    accessed_at = row['accessed_at']
+    accessed_at = row["accessed_at"]
     if isinstance(accessed_at, str):
         accessed_at = datetime.fromisoformat(accessed_at)
 
     custom_metadata = {}
-    if row.get('custom_metadata'):
+    if row.get("custom_metadata"):
         try:
-            custom_metadata = json.loads(row['custom_metadata'])
+            custom_metadata = json.loads(row["custom_metadata"])
         except (json.JSONDecodeError, TypeError):
             custom_metadata = {}
 
     return FileMetadata(
-        file_id=row['file_id'],
-        filename=row['filename'],
-        original_path=row['original_path'],
-        size=row['size'],
-        file_type=FileType(row['file_type']),
-        mime_type=row['mime_type'],
-        hash_sha256=row['hash_sha256'],
+        file_id=row["file_id"],
+        box_id=row["box_id"],
+        filename=row["filename"],
+        original_path=row["original_path"],
+        size=row["size"],
+        file_type=FileType(row["file_type"]),
+        mime_type=row["mime_type"],
+        hash_sha256=row["hash_sha256"],
         created_at=created_at,
         modified_at=modified_at,
         accessed_at=accessed_at,
-        user_id=row['user_id'],
-        owner=row['owner'],
-        status=FileStatus(row['status']),
-        version=row['version'],
-        parent_version_id=row['parent_version_id'],
+        user_id=row["user_id"],
+        owner=row["owner"],
+        status=FileStatus(row["status"]),
+        version=row["version"],
+        parent_version_id=row["parent_version_id"],
         tags=tags,
-        description=row['description'],
+        description=row["description"],
         custom_metadata=custom_metadata,
     )
+
+class FileVersionModel(BaseModel):
+    """DB model for file versions."""
+
+    def create_from_file_row(self, file_row, change_description=""):
+        """ Creates a version entry based on the CURRENT state of a file row before it gets updated."""
+        import uuid
+        version_id = str(uuid.uuid4())
+        
+        query = """
+            INSERT INTO file_versions (
+                version_id, file_id, user_id, box_id, version_number,
+                hash_sha256, size, created_at, created_by,
+                change_description, parent_version_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?)
+        """
+        
+        # We assume file_row is a dictionary from the 'files' table
+        params = (
+            version_id,
+            file_row['file_id'],
+            file_row['user_id'],
+            file_row['box_id'],
+            file_row['version'],      # This becomes the version number of the historical record
+            file_row['hash_sha256'],
+            file_row['size'],
+            file_row['owner'],        # created_by (snapshot of who owned it)
+            change_description,
+            file_row['parent_version_id']
+        )
+        self.db.execute(query, params)
+        return version_id
+
+    def list_by_file(self, file_id):
+        """List all previous versions of a file."""
+        query = "SELECT * FROM file_versions WHERE file_id = ? ORDER BY version_number DESC"
+        return self.db.fetch_all(query, (file_id,))

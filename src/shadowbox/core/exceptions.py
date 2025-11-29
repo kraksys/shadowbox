@@ -15,7 +15,7 @@ class StorageError(ShadowBoxError):
 
 
 class InitializationError(ShadowBoxError):
-    # Raised when there is an error initializing a component.
+    # raised when initialization fails (anywhere)
     pass
 
 
@@ -25,12 +25,12 @@ class FileNotFoundError(StorageError):
 
 
 class UserNotFoundError(ShadowBoxError):
-    # Raised when a user is not found in the database.
+    # raised when the user DNE in the DB
     pass
 
 
 class UserExistsError(ShadowBoxError):
-    # Raised when trying to create a user that already exists.
+    # raised when creating an existing user
     pass
 
 
@@ -50,10 +50,25 @@ class QuotaExceededError(StorageError):
 
 
 class IntegrityCheckFailedError(ShadowBoxError):
-    # Raised when a file's hash does not match its expected value.
+    # raised on a hash mismatch
     pass
 
 
 class InvalidPathError(StorageError):
     # raised when path DNE
+    pass
+
+
+class BoxNotFoundError(ShadowBoxError):
+    # raised when box not found
+    pass
+
+
+class BoxExistsError(ShadowBoxError):
+    # raised when a box already exists
+    pass
+
+
+class AccessDeniedError(ShadowBoxError):
+    # raised when a user doesn't have proper acccess perms
     pass

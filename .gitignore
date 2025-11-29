@@ -53,3 +53,6 @@ coverage.xml
 .dmypy.json
 dmypy.json
 uv.lock
+
+frontend.txt
+plan.md
