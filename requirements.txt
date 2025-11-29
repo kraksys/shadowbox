@@ -29,3 +29,8 @@ ipdb
 # Performance monitoring
 memory-profiler
 line-profiler
+
+# Security prototype extra dependencies
+cryptography
+argon2-cffi
+keyring
