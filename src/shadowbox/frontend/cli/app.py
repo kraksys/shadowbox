@@ -647,6 +647,8 @@ class ShadowBoxApp(App):
         self.pending_shares: set[str] = set()
         # Discovered public boxes on LAN: code -> {name, ip, port}
         self.discovered_public: dict[str, dict] = {}
+        # Connected remote boxes: code -> {code, ip, port, name}
+        self.connected_boxes: dict[str, dict] = {}
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -675,7 +677,8 @@ class ShadowBoxApp(App):
         self.table.add_columns("Name", "Size", "Tags", "Status", "Modified")
         self.refresh_boxes()
         self.refresh_files()
-        # Start background discovery for public boxes (every 10 seconds)
+        # Discover public boxes immediately, then every 10 seconds
+        self._discover_public_boxes()
         self.set_interval(10.0, self._discover_public_boxes)
 
     def refresh_boxes(self) -> None:
@@ -705,9 +708,16 @@ class ShadowBoxApp(App):
         self.boxes.refresh()
 
         if self.shared_boxes is not None:
+            # Local shared boxes (from database)
             for box in shared_boxes:
                 item = ListItem(Static(f"{box.box_name} (shared)"))
                 item.data = box
+                self.shared_boxes.append(item)
+            # Remote connected boxes (via mDNS code)
+            for code, info in self.connected_boxes.items():
+                display = f"{info['name']} @ {info['ip']}"
+                item = ListItem(Static(display))
+                item.data = {"type": "remote", **info}
                 self.shared_boxes.append(item)
             self.shared_boxes.refresh()
 
@@ -761,16 +771,56 @@ class ShadowBoxApp(App):
         self.refresh_files()
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
-        box = getattr(event.item, "data", None)
-        if box:
-            self.ctx.active_box = box
-            self.refresh_files()
+        data = getattr(event.item, "data", None)
+        if not data:
+            return
+        # Remote/public box - show its files via network
+        if isinstance(data, dict) and data.get("type") in ("remote", "public"):
+            self._show_remote_box_files(data)
+            return
+        # Local box
+        self.ctx.active_box = data
+        self.refresh_files()
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
-        box = getattr(event.item, "data", None)
-        if box and box != self.ctx.active_box:
-            self.ctx.active_box = box
+        data = getattr(event.item, "data", None)
+        if not data:
+            return
+        # Skip remote/public boxes on highlight (only select triggers fetch)
+        if isinstance(data, dict) and data.get("type") in ("remote", "public"):
+            return
+        # Local box
+        if data != self.ctx.active_box:
+            self.ctx.active_box = data
             self.refresh_files()
+
+    def _show_remote_box_files(self, remote_info: dict) -> None:
+        """Fetch and display files from a remote connected box (non-blocking)."""
+        ip = remote_info["ip"]
+        port = remote_info["port"]
+        code = remote_info["code"]
+        self._set_status(f"Fetching files from {code}...")
+        self.run_worker(
+            lambda: self._fetch_remote_files_worker(ip, port, code),
+            name="fetch_remote_files_worker",
+            exclusive=True,
+            thread=True,
+        )
+
+    def _fetch_remote_files_worker(self, ip: str, port: int, code: str) -> dict:
+        """Worker that fetches remote files (runs in thread)."""
+        try:
+            res = connect_and_request(ip, port, "LIST", timeout=5)
+            files_text = res.get("text", "").strip() if isinstance(res, dict) else str(res)
+            return {
+                "success": True,
+                "code": code,
+                "ip": ip,
+                "port": port,
+                "files_preview": files_text[:500] if files_text else "(empty)",
+            }
+        except Exception as exc:
+            return {"success": False, "code": code, "error": str(exc)}
 
     def _set_status(self, message: str) -> None:
         if self.status:
@@ -1238,9 +1288,18 @@ class ShadowBoxApp(App):
         # Handle connect worker completion
         elif worker_name == "connect_worker" and result:
             if result.get("success"):
-                self._set_status(f"Connected to {result['code']}")
+                code = result["code"]
+                # Store the connection
+                self.connected_boxes[code] = {
+                    "code": code,
+                    "ip": result["ip"],
+                    "port": result["port"],
+                    "name": f"Remote ({code})",
+                }
+                self._set_status(f"Connected to {code}")
+                self.refresh_boxes()
                 self.push_screen(ConnectSuccessModal(
-                    code=result["code"],
+                    code=code,
                     ip=result["ip"],
                     port=result["port"],
                     files_preview=result["files_preview"],
@@ -1255,15 +1314,28 @@ class ShadowBoxApp(App):
                     self.notify(f"Connection failed: {error}", title="Error", severity="error")
                 self._set_status("Connection failed")
 
+        # Handle fetch remote files worker completion
+        elif worker_name == "fetch_remote_files_worker" and result:
+            if result.get("success"):
+                self._set_status(f"Connected to {result['code']}")
+                self.push_screen(ConnectSuccessModal(
+                    code=result["code"],
+                    ip=result["ip"],
+                    port=result["port"],
+                    files_preview=result["files_preview"],
+                ))
+            else:
+                self._set_status(f"Failed to fetch files: {result.get('error')}")
+
     def _refresh_public_boxes(self) -> None:
         """Update the public boxes list in the sidebar."""
-        if not self.public_boxes:
+        if self.public_boxes is None:
             return
         self.public_boxes.clear()
         for code, info in self.discovered_public.items():
             display = f"{info['name']} @ {info['ip']}"
             item = ListItem(Static(display))
-            item.data = {"code": code, **info}
+            item.data = {"type": "public", "code": code, **info}
             self.public_boxes.append(item)
         self.public_boxes.refresh()
 
