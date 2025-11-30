@@ -5,10 +5,8 @@ Start here with `python -m shadowbox.frontend.cli.app`
 
 from __future__ import annotations
 
-import random
-import string
 import subprocess
-import socket
+import threading
 from datetime import datetime
 from typing import Iterable, Optional
 
@@ -29,13 +27,13 @@ from textual.widgets import (
     Tree,
 )
 from textual.screen import ModalScreen
-from zeroconf import Zeroconf, ServiceInfo, ServiceBrowser, ServiceListener
 
 from shadowbox.core.models import FileMetadata
 from shadowbox.frontend.cli.context import AppContext, build_context
 from shadowbox.database.search import fuzzy_search_fts
-from shadowbox.network.client import connect_and_request
-from shadowbox.network.server import advertise_service, SERVICE_TYPE
+from shadowbox.network.client import get_server_address, connect_and_request
+from shadowbox.network.server import give_code, start_tcp_server, stop_server, advertise_service
+from shadowbox.network.adapter import init_env, select_box
 
 
 def _human_size(num: int) -> str:
@@ -555,7 +553,7 @@ class ConnectModal(ModalScreen[Optional[ConnectResult]]):
         self.set_focus(self.code_input)
 
     def _submit(self) -> None:
-        code = self.code_input.value.strip().upper()
+        code = self.code_input.value.strip().lower()
         if len(code) != 4:
             self.status_label.update("Code must be 4 characters")
             return
@@ -643,8 +641,8 @@ class ShadowBoxApp(App):
         self.table: DataTable | None = None
         self.status: Static | None = None
         self.row_keys: list[str] = []
-        # Track active shares: box_id -> (zeroconf, service_info, code, is_public)
-        self.active_shares: dict[str, tuple[Zeroconf, ServiceInfo, str, bool]] = {}
+        # Track active shares: box_id -> (zeroconf, info, code, is_public, stop_event)
+        self.active_shares: dict[str, tuple] = {}
         # Track boxes currently being set up for sharing (loading state)
         self.pending_shares: set[str] = set()
         # Discovered public boxes on LAN: code -> {name, ip, port}
@@ -695,10 +693,10 @@ class ShadowBoxApp(App):
         for box in user_boxes:
             # Show indicator based on share status
             if box.box_id in self.pending_shares:
-                indicator = "[...] "  # Loading/pending
+                indicator = r"\[...] "  # Loading/pending
             elif box.box_id in self.active_shares:
-                _, _, code, is_public = self.active_shares[box.box_id]
-                indicator = "[P] " if is_public else f"[S:{code}] "
+                _, _, code, is_public, _ = self.active_shares[box.box_id]
+                indicator = r"\[P] " if is_public else f"\\[S:{code}] "
             else:
                 indicator = ""
             item = ListItem(Static(f"{indicator}{box.box_name}"))
@@ -711,6 +709,7 @@ class ShadowBoxApp(App):
                 item = ListItem(Static(f"{box.box_name} (shared)"))
                 item.data = box
                 self.shared_boxes.append(item)
+            self.shared_boxes.refresh()
 
         # Keep selection aligned with active box.
         for idx, item in enumerate(self.boxes.children):
@@ -979,16 +978,37 @@ class ShadowBoxApp(App):
         )
 
     def _do_share_worker(self, box_id: str, box_name: str, result: "ShareBoxResult", username: str) -> dict:
-        """Worker that does the actual mDNS registration (runs in thread)."""
+        """Worker that does the actual server startup and mDNS registration (runs in thread)."""
         try:
-            # Generate 4-letter code (or use PUBLIC_ prefix for public shares)
+            # Generate 4-letter code for private, empty for public (uses base service type)
             if result.is_public:
-                code = f"PUBLIC_{box_name[:8].upper()}"
+                code = ""  # Empty = base _shadowbox._tcp.local. (one public box per user)
             else:
-                code = "".join(random.choices(string.ascii_uppercase + string.digits, k=4))
+                code = give_code()
 
-            # Start advertising the service (this can block)
-            zeroconf, info = advertise_service(code, 9999)
+            # Build service type with code embedded
+            service_type = f"_shadowbox{code}._tcp.local."
+
+            # Create server environment using the TUI's database
+            db_path = str(self.ctx.fm.db.db_path)
+            storage_root = str(self.ctx.fm.storage.root) if hasattr(self.ctx.fm.storage, 'root') else None
+            env = init_env(db_path=db_path, storage_root=storage_root, username=username)
+            select_box(env, box_name)
+            context = {"mode": "core", "env": env}
+
+            # Advertise the service
+            server_name = f"FileServer-{username}" if result.is_public else f"FileServer-{code}"
+            zeroconf, info = advertise_service(server_name, 9999, service_type)
+
+            # Create stop event for this server
+            server_stop_event = threading.Event()
+
+            # Start TCP server in a daemon thread
+            def run_server():
+                start_tcp_server(context, 9999)
+
+            server_thread = threading.Thread(target=run_server, daemon=True)
+            server_thread.start()
 
             return {
                 "success": True,
@@ -1000,6 +1020,7 @@ class ShadowBoxApp(App):
                 "username": username,
                 "zeroconf": zeroconf,
                 "info": info,
+                "stop_event": server_stop_event,
             }
         except Exception as exc:
             return {
@@ -1009,11 +1030,14 @@ class ShadowBoxApp(App):
             }
 
     def _stop_sharing(self, box_id: str) -> None:
-        """Stop sharing a box and cleanup mDNS registration."""
+        """Stop sharing a box and cleanup mDNS registration and TCP server."""
         if box_id not in self.active_shares:
             return
-        zeroconf, info, code, is_public = self.active_shares[box_id]
+        zeroconf, info, code, is_public, stop_event = self.active_shares[box_id]
         try:
+            # Stop the TCP server
+            stop_server()
+            # Unregister mDNS service
             zeroconf.unregister_service(info)
             zeroconf.close()
         except Exception:
@@ -1045,27 +1069,13 @@ class ShadowBoxApp(App):
     def _do_connect_worker(self, code: str) -> dict:
         """Worker that does the actual mDNS lookup and TCP connection (runs in thread)."""
         try:
-            # Look for the specific service by code
-            zc = Zeroconf()
-            service_name = f"{code}.{SERVICE_TYPE}"
-            info = zc.get_service_info(SERVICE_TYPE, service_name, timeout=5000)
+            # Use backend API for service discovery
+            result = get_server_address(code, timeout=5.0)
 
-            if not info:
-                zc.close()
+            if not result:
                 return {"success": False, "code": code, "error": "not_found"}
 
-            # Extract IP and port
-            ip = None
-            if info.addresses:
-                for packed in info.addresses:
-                    if len(packed) == 4:  # IPv4
-                        ip = socket.inet_ntoa(packed)
-                        break
-            port = info.port
-            zc.close()
-
-            if not ip:
-                return {"success": False, "code": code, "error": "no_ip"}
+            ip, port = result
 
             # Try to connect and list files
             res = connect_and_request(ip, port, "LIST")
@@ -1120,10 +1130,11 @@ class ShadowBoxApp(App):
         save_config(cfg)
 
     def _cleanup_shares(self) -> None:
-        """Cleanup all active mDNS shares on exit."""
+        """Cleanup all active mDNS shares and TCP servers on exit."""
         for box_id in list(self.active_shares.keys()):
-            zeroconf, info, _, _ = self.active_shares[box_id]
+            zeroconf, info, _, _, _ = self.active_shares[box_id]
             try:
+                stop_server()
                 zeroconf.unregister_service(info)
                 zeroconf.close()
             except Exception:
@@ -1142,24 +1153,30 @@ class ShadowBoxApp(App):
 
     def _discover_public_boxes_worker(self) -> dict[str, dict]:
         """Worker that does the actual discovery (runs in thread)."""
+        import socket
         import time
+        from zeroconf import Zeroconf, ServiceBrowser, ServiceListener
+
         discovered: dict[str, dict] = {}
+        base_service_type = "_shadowbox._tcp.local."
+
         try:
             zc = Zeroconf()
 
             class Listener(ServiceListener):
                 def add_service(self, zeroconf: Zeroconf, type_: str, name: str) -> None:
-                    if name.startswith("PUBLIC_"):
-                        info = zeroconf.get_service_info(type_, name, timeout=1000)
-                        if info and info.addresses:
-                            ip = None
-                            for packed in info.addresses:
-                                if len(packed) == 4:
-                                    ip = socket.inet_ntoa(packed)
-                                    break
-                            if ip:
-                                box_name = name.replace(f".{SERVICE_TYPE}", "").replace("PUBLIC_", "")
-                                discovered[name] = {"name": box_name, "ip": ip, "port": info.port}
+                    # All services on base _shadowbox._tcp.local. are public
+                    info = zeroconf.get_service_info(type_, name, timeout=1000)
+                    if info and info.addresses:
+                        ip = None
+                        for packed in info.addresses:
+                            if len(packed) == 4:
+                                ip = socket.inet_ntoa(packed)
+                                break
+                        if ip:
+                            # Extract username from "FileServer-{username}._shadowbox._tcp.local."
+                            owner = name.split(".")[0].replace("FileServer-", "")
+                            discovered[name] = {"name": owner, "ip": ip, "port": info.port}
 
                 def remove_service(self, _zc: Zeroconf, _type: str, _name: str) -> None:
                     pass
@@ -1168,7 +1185,7 @@ class ShadowBoxApp(App):
                     pass
 
             listener = Listener()
-            browser = ServiceBrowser(zc, SERVICE_TYPE, listener)
+            browser = ServiceBrowser(zc, base_service_type, listener)
             time.sleep(1.5)  # OK to block here - we're in a worker thread
             browser.cancel()
             zc.close()
@@ -1200,6 +1217,7 @@ class ShadowBoxApp(App):
                     result["info"],
                     result["code"],
                     result["is_public"],
+                    result["stop_event"],
                 )
                 self.refresh_boxes()
 
@@ -1247,6 +1265,7 @@ class ShadowBoxApp(App):
             item = ListItem(Static(display))
             item.data = {"code": code, **info}
             self.public_boxes.append(item)
+        self.public_boxes.refresh()
 
     def action_quit(self) -> None:
         """Override quit to cleanup shares first."""

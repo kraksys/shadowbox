@@ -54,7 +54,6 @@ class ServiceFinder:
         We attempt to resolve the service info and set it as found.
         Works with IPv4 and IPv6.
         """
-        pass
         # We only care when a service is added (or updated) and we haven't already resolved one.
         if self._found_event.is_set():
             return
