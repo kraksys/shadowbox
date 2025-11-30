@@ -279,6 +279,47 @@ class FileModel(BaseModel):
             self._add_tags(metadata.file_id, metadata.tags)
 
         return metadata.file_id
+    
+    def create_many(self, metadata_list):
+        """ Bulk insert multiple file records in a single transaction. """
+        if not metadata_list:
+            return
+
+        query = """
+            INSERT INTO files (
+                file_id, user_id, box_id, filename, original_path, size,
+                file_type, mime_type, hash_sha256, created_at,
+                modified_at, accessed_at, owner, status, version,
+                parent_version_id, description, custom_metadata) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+
+        params_list = []
+        for meta in metadata_list:
+            params_list.append((
+                meta.file_id,
+                meta.user_id,
+                meta.box_id,
+                meta.filename,
+                meta.original_path,
+                meta.size,
+                meta.file_type.value,
+                meta.mime_type,
+                meta.hash_sha256,
+                meta.created_at,
+                meta.modified_at,
+                meta.accessed_at,
+                meta.owner,
+                meta.status.value,
+                meta.version,
+                meta.parent_version_id,
+                meta.description,
+                self._serialize_json(meta.custom_metadata),
+            ))
+
+        self.db.execute_many(query, params_list)
+        return True
+
 
     def get(self, file_id):
         """Get FileMetadata by ID or None."""
@@ -500,3 +541,40 @@ def row_to_metadata(row, tags):
         description=row["description"],
         custom_metadata=custom_metadata,
     )
+
+class FileVersionModel(BaseModel):
+    """DB model for file versions."""
+
+    def create_from_file_row(self, file_row, change_description=""):
+        """ Creates a version entry based on the CURRENT state of a file row before it gets updated."""
+        import uuid
+        version_id = str(uuid.uuid4())
+        
+        query = """
+            INSERT INTO file_versions (
+                version_id, file_id, user_id, box_id, version_number,
+                hash_sha256, size, created_at, created_by,
+                change_description, parent_version_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?)
+        """
+        
+        # We assume file_row is a dictionary from the 'files' table
+        params = (
+            version_id,
+            file_row['file_id'],
+            file_row['user_id'],
+            file_row['box_id'],
+            file_row['version'],      # This becomes the version number of the historical record
+            file_row['hash_sha256'],
+            file_row['size'],
+            file_row['owner'],        # created_by (snapshot of who owned it)
+            change_description,
+            file_row['parent_version_id']
+        )
+        self.db.execute(query, params)
+        return version_id
+
+    def list_by_file(self, file_id):
+        """List all previous versions of a file."""
+        query = "SELECT * FROM file_versions WHERE file_id = ? ORDER BY version_number DESC"
+        return self.db.fetch_all(query, (file_id,))

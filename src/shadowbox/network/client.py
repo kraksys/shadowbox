@@ -9,10 +9,15 @@ Commands:
   DELETE <filename> -> delete remote file
 
 Usage:
-  python zeroconf_client.py [LIST]
-  python zeroconf_client.py GET <filename>
-  python zeroconf_client.py PUT <local_path> [remote_name]
-  python zeroconf_client.py DELETE <filename>
+  python client.py [LIST]
+  python client.py GET <filename>
+  python client.py PUT <local_path> [remote_name]
+  python client.py DELETE <filename>
+  python client.py BOX <box_name>   -> select the active box for the current session
+  python client.py LIST_BOXES       -> list available boxes for the user
+  python client.py SHARE_BOX <box_name> <username> [perm] -> share a box
+  python client.py LIST_AVAILABLE_USERS -> list users available for sharing
+  python client.py LIST_SHARED_BOXES  -> list boxes that have been shared with you
 
 If no arguments given, defaults to LIST.
 [still not finished]
@@ -23,8 +28,12 @@ import socket
 import time  # not in use so far
 import threading
 from zeroconf import Zeroconf, ServiceBrowser, ServiceInfo
-
 SERVICE_TYPE = "_shadowbox._tcp.local."
+
+def set_code(code):
+    global SERVICE_TYPE
+    SERVICE_TYPE = f"_shadowbox{code}._tcp.local."
+
 DISCOVER_TIMEOUT = 8.0  # seconds to wait for service discovery
 READ_BUF = 4096
 
@@ -163,12 +172,38 @@ def connect_and_request(ip, port, request_line, recv_file=False, out_path=None, 
             return {"status": "ok", "text": data}
 
 
+def get_server_address(code: str, timeout: float = 5.0):
+    """
+    Discover a server with a specific code suffix (e.g., "icmf" -> _shadowboxicmf._tcp.local.).
+
+    Args:
+        code (str): The specific letter/code to look for
+        timeout (float): How long to wait for discovery
+
+    Returns:
+        tuple: (ip, port) if found
+        None: If no server is found
+    """
+    # Construct the service type string dynamically
+    service_type = f"_shadowbox{code}._tcp.local."
+
+    finder = ServiceFinder(service_type=service_type, timeout=timeout)
+    info = finder.wait_for_service()
+    finder.close()
+
+    if info:
+        return info['ip'], info['port']
+    return None
+
+
+
 def cmd_list(ip, port):
     res = connect_and_request(ip, port, "LIST")
     if res["status"] == "ok":
         print(res["text"])
     else:
         print("Error:", res)
+    return res
 
 
 def cmd_get(ip, port, filename, out_path=None):
@@ -181,6 +216,7 @@ def cmd_get(ip, port, filename, out_path=None):
         # TODO: find a better way to handle this error
         os.remove(out_path)  # !!! This can delete an existing file, but it'd be a corrupted one so it's fine
     print(res)
+    return res
 
 
 def cmd_put(ip, port, local_path, remote_name=None, timeout=60):
@@ -259,6 +295,49 @@ def cmd_delete(ip, port, filename, timeout=30):
     return res
 
 
+def cmd_list_boxes(ip, port):
+    """Sends the LIST_BOXES command to the server."""
+    res = connect_and_request(ip, port, "LIST_BOXES")
+    print(res.get("text", res.get("error")).strip())
+
+
+def cmd_share_box(ip, port, args):
+    """Sends the SHARE_BOX command to the server."""
+    if len(args) < 2:
+        print("Usage: client.py SHARE_BOX <box_name> <username> [permission]")
+        return
+
+    box_name, share_with_user = args[0], args[1]
+    permission = args[2] if len(args) > 2 else "read"
+
+    request_line = f"SHARE_BOX {box_name} {share_with_user} {permission}"
+    res = connect_and_request(ip, port, request_line)
+    print(res.get("text", res.get("error")).strip())
+
+
+def cmd_list_available_users(ip, port):
+    """Sends the LIST_AVAILABLE_USERS command to the server."""
+    res = connect_and_request(ip, port, "LIST_AVAILABLE_USERS")
+    print(res.get("text", res.get("error")).strip())
+
+def cmd_list_shared_boxes(ip, port):
+    """Sends the LIST_SHARED_BOXES command to the server."""
+    res = connect_and_request(ip, port, "LIST_SHARED_BOXES")
+    print(res.get("text", res.get("error")).strip())
+
+def cmd_box(ip, port, namespaced_box):
+    """Sends the BOX command to select a box using the 'owner/box_name' format."""
+    res = connect_and_request(ip, port, f"BOX {namespaced_box}")
+    print(res.get("text", res.get("error")).strip())
+
+def cmd_check_available_boxes(ip, port):
+    pass
+    #some logic to see if there is a server responding
+
+def cmd_stop(ip, port):
+    res = connect_and_request(ip, port, f"STOP")
+    print(res["text"].strip())
+
 def main(argv):
     if len(argv) <= 1:
         cmd = "LIST"
@@ -267,7 +346,7 @@ def main(argv):
         cmd = argv[1].upper()
         args = argv[2:]
 
-    finder = ServiceFinder()
+    finder = ServiceFinder(service_type=SERVICE_TYPE)
     try:
         print(f"Searching for Zeroconf services of type {SERVICE_TYPE} (timeout {DISCOVER_TIMEOUT}s)...")
         info = finder.wait_for_service()
@@ -306,6 +385,24 @@ def main(argv):
                 return 1
             filename = args[0]
             cmd_delete(ip, port, filename)
+        elif cmd == "LIST_BOXES":
+            cmd_list_boxes(ip, port)
+        elif cmd == "SHARE_BOX":
+            cmd_share_box(ip, port, args)
+        elif cmd == "LIST_AVAILABLE_USERS":
+            cmd_list_available_users(ip, port)
+        elif cmd == "LIST_SHARED_BOXES":
+            cmd_list_shared_boxes(ip, port)
+        elif cmd == "BOX":
+            if not args:
+                print("Usage: python client.py BOX <owner_username/box_name>")
+                print("Example (your own box): python client.py BOX myuser/mybox")
+                print("Example (shared box): python client.py BOX otheruser/sharedbox")
+                return 1
+            namespaced_box = args[0]
+            cmd_box(ip, port, namespaced_box)
+        elif cmd == "STOP":
+            cmd_stop(ip, port)
         else:
             print("Unknown command:", cmd)
             return 1

@@ -11,6 +11,8 @@ from ..database.connection import DatabaseConnection
 from ..database.models import UserModel, FileModel, BoxModel, BoxShareModel
 from .models import FileMetadata, FileStatus, UserDirectory, Box, BoxShare
 from .storage import Storage
+from .versioning import VersionManager
+from .metadata import MetadataExtractor
 from .exceptions import (
     UserNotFoundError,
     FileNotFoundError,
@@ -39,6 +41,7 @@ class FileManager:
         self.file_model = FileModel(self.db)
         self.box_model = BoxModel(self.db)
         self.box_share_model = BoxShareModel(self.db)
+        self.metadata_extractor = MetadataExtractor()
 
         # Initialize storage (handles both encrypted and unencrypted ops)
         self.storage = Storage(storage_root)
@@ -195,34 +198,36 @@ class FileManager:
         if not box:
             raise BoxNotFoundError(f"Box with ID '{box_id}' not found.")
 
-        # Check if user has write access to the box
+        # Check Access
         if box.user_id != user_id:
             if not self.box_share_model.has_access(box_id, user_id, "write"):
-                raise AccessDeniedError(
-                    f"User '{user_id}' does not have write access to box '{box_id}'."
-                )
+                raise AccessDeniedError(f"User '{user_id}' no write access to box '{box_id}'.")
 
         # Check quota
         size = src.stat().st_size
         if user["used_bytes"] + size > user["quota_bytes"]:
             raise QuotaExceededError("Adding this file would exceed the user's quota.")
 
+        # NEW: Extract Metadata before storage
+        extracted_meta = self.metadata_extractor.extract(str(src))
+        detected_mime = extracted_meta.pop("mime_type", None) # Remove mime to store in dedicated col
+
         # Determine encryption setting
         if encrypt is None:
-            # Use box default setting
             encrypt = box.settings.get("encryption_enabled", self.encryption_enabled)
 
-        # Store file (encrypted or unencrypted)
+        # Store file
         if encrypt and self.encryption_enabled:
             info = self.storage.put_encrypted(user_id, box_id, str(src))
-            file_hash = info["hash"]
-            size = info["size"]
             is_encrypted = True
         else:
             info = self.storage.put(user_id, box_id, str(src))
-            file_hash = info["hash"]
-            size = info["size"]
             is_encrypted = False
+
+        # Prepare Custom Metadata (Merge extraction + system flags)
+        final_custom_metadata = extracted_meta
+        if is_encrypted:
+            final_custom_metadata["encrypted"] = True
 
         # Create metadata record
         metadata = FileMetadata(
@@ -230,16 +235,15 @@ class FileManager:
             box_id=box_id,
             filename=src.name,
             original_path=str(source_path),
-            size=size,
-            hash_sha256=file_hash,
+            size=info["size"],
+            hash_sha256=info["hash"],
+            mime_type=detected_mime, # Use detected mime type
             owner=user["username"],
             tags=tags if tags else [],
-            custom_metadata={"encrypted": is_encrypted} if is_encrypted else {},
+            custom_metadata=final_custom_metadata,
         )
 
-        # Save metadata to the database
         self.file_model.create(metadata)
-        # Update user's quota usage
         self.user_model.update_quota(user_id, user["used_bytes"] + size)
         return metadata
 
@@ -424,3 +428,202 @@ class FileManager:
     def enable_box_encryption(self, user_id: str, box_id: str, password: str) -> bool:
         """Changing encryption state of a box is not supported."""
         raise ValueError("Changing encryption state of a box is not supported")
+    
+    def update_file(
+        self,
+        file_id: str,
+        source_path: str,
+        change_description: str = "File updated",
+        encrypt: Optional[bool] = None
+    ) -> FileMetadata:
+        """Update an existing file with new content, versioning, and metadata extraction."""
+        src = Path(source_path)
+        if not src.exists():
+            raise FileNotFoundError(f"Source file not found at: {source_path}")
+
+        current_metadata = self.get_file_metadata(file_id)
+        if not current_metadata:
+            raise FileNotFoundError(f"File with ID '{file_id}' not found.")
+
+        user_id = current_metadata.user_id
+        box_id = current_metadata.box_id
+
+        # Check Quota
+        new_size = src.stat().st_size
+        size_diff = new_size - current_metadata.size
+        user = self.user_model.get(user_id)
+        if user["used_bytes"] + size_diff > user["quota_bytes"]:
+            raise QuotaExceededError("Updating exceeds quota.")
+
+        # Create Snapshot
+        version_mgr = VersionManager(self.db)
+        version_mgr.create_version_snapshot(file_id, change_description)
+
+        # Extract Metadata
+        extracted_meta = self.metadata_extractor.extract(str(src))
+        detected_mime = extracted_meta.pop("mime_type", None)
+
+        # Storage
+        is_encrypted_prev = current_metadata.custom_metadata.get("encrypted", False)
+        should_encrypt = encrypt if encrypt is not None else is_encrypted_prev
+
+        if should_encrypt and self.encryption_enabled:
+            info = self.storage.put_encrypted(user_id, box_id, str(src))
+            is_encrypted = True
+        else:
+            info = self.storage.put(user_id, box_id, str(src))
+            is_encrypted = False
+
+        # Merge Metadata
+        final_custom_metadata = extracted_meta
+        if is_encrypted:
+            final_custom_metadata["encrypted"] = True
+
+        # Update Record
+        current_metadata.filename = src.name 
+        current_metadata.size = info["size"]
+        current_metadata.hash_sha256 = info["hash"]
+        current_metadata.mime_type = detected_mime
+        current_metadata.modified_at = datetime.utcnow()
+        current_metadata.version += 1
+        current_metadata.custom_metadata = final_custom_metadata
+
+        self.file_model.update(current_metadata)
+        self.user_model.update_quota(user_id, user["used_bytes"] + size_diff)
+
+        return current_metadata
+    
+    def add_files_bulk(
+        self,
+        user_id: str,
+        box_id: str,
+        file_paths: List[str],
+        tags: Optional[List[str]] = None,
+        encrypt: Optional[bool] = None
+    ) -> dict:
+        """
+        Add multiple files efficiently.
+        Returns a dict: {'success': [FileMetadata], 'failed': [{'path': str, 'error': str}]}
+        """
+        results = {"success": [], "failed": []}
+        
+        # Validation and Setup 
+        user = self.user_model.get(user_id)
+        if not user:
+            raise UserNotFoundError(f"User {user_id} not found.")
+            
+        box = self.get_box(box_id)
+        if not box:
+            raise BoxNotFoundError(f"Box {box_id} not found.")
+
+        if box.user_id != user_id:
+            if not self.box_share_model.has_access(box_id, user_id, "write"):
+                raise AccessDeniedError(f"No write access to box {box_id}.")
+
+        # Pre-calculate total size to check quota
+        total_batch_size = 0
+        valid_paths = []
+        
+        for p in file_paths:
+            path_obj = Path(p)
+            if not path_obj.exists():
+                results["failed"].append({"path": p, "error": "File not found"})
+                continue
+            size = path_obj.stat().st_size
+            total_batch_size += size
+            valid_paths.append(path_obj)
+
+        if user["used_bytes"] + total_batch_size > user["quota_bytes"]:
+            raise QuotaExceededError("Batch upload exceeds user quota.")
+
+        # Determine encryption
+        if encrypt is None:
+            encrypt = box.settings.get("encryption_enabled", self.encryption_enabled)
+
+        # Process Files
+        metadata_to_insert = []
+        
+        for src in valid_paths:
+            try:
+                # Extract Metadata
+                extracted_meta = self.metadata_extractor.extract(str(src))
+                detected_mime = extracted_meta.pop("mime_type", None)
+
+                # Storage Put
+                if encrypt and self.encryption_enabled:
+                    info = self.storage.put_encrypted(user_id, box_id, str(src))
+                    is_encrypted = True
+                else:
+                    info = self.storage.put(user_id, box_id, str(src))
+                    is_encrypted = False
+
+                final_custom_metadata = extracted_meta
+                if is_encrypted:
+                    final_custom_metadata["encrypted"] = True
+
+                # Create Object
+                meta = FileMetadata(
+                    user_id=user_id,
+                    box_id=box_id,
+                    filename=src.name,
+                    original_path=str(src),
+                    size=info["size"],
+                    hash_sha256=info["hash"],
+                    mime_type=detected_mime,
+                    owner=user["username"],
+                    tags=tags if tags else [],
+                    custom_metadata=final_custom_metadata,
+                )
+                metadata_to_insert.append(meta)
+                results["success"].append(meta)
+
+            except Exception as e:
+                results["failed"].append({"path": str(src), "error": str(e)})
+
+        # 4. Bulk DB Insert
+        if metadata_to_insert:
+            self.file_model.create_many(metadata_to_insert)
+            
+            # Update Quota ONCE
+            new_usage = user["used_bytes"] + sum(m.size for m in metadata_to_insert)
+            self.user_model.update_quota(user_id, new_usage)
+
+        return results
+
+    def delete_files_bulk(self, file_ids: List[str], soft: bool = True) -> int:
+        """ Delete multiple files efficiently. Returns count of deleted files. """
+        if not file_ids:
+            return 0
+
+        # Fetch files to calculate size and verify ownership
+        placeholders = ",".join(["?"] * len(file_ids))
+        query = f"SELECT * FROM files WHERE file_id IN ({placeholders})"
+        rows = self.db.fetch_all(query, tuple(file_ids))
+        
+        if not rows:
+            return 0
+
+        total_freed_bytes = 0
+        user_id = rows[0]["user_id"]
+
+        # Perform Deletion
+        if soft:
+            update_sql = f"UPDATE files SET status = 'deleted' WHERE file_id IN ({placeholders})"
+            self.db.execute(update_sql, tuple(file_ids))
+        else:
+            delete_sql = f"DELETE FROM files WHERE file_id IN ({placeholders})"
+            self.db.execute(delete_sql, tuple(file_ids))
+
+        # Calculate Freed Space
+        for row in rows:
+            if row["status"] != "deleted":
+                total_freed_bytes += row["size"]
+
+        # Update Quota
+        if total_freed_bytes > 0:
+            user = self.user_model.get(user_id)
+            if user:
+                new_used = max(0, user["used_bytes"] - total_freed_bytes)
+                self.user_model.update_quota(user_id, new_used)
+
+        return len(rows)
