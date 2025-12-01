@@ -134,6 +134,34 @@ class BoxModel(BaseModel):
         self.db.execute(query, (is_shared, box_id))
         return True
 
+    def add_tags(self, box_id, tags):
+        """Add tags to a box using polymorphic tags table."""
+        for tag_name in tags:
+            query = """
+                INSERT OR IGNORE INTO tags (entity_type, entity_id, tag_name)
+                VALUES ('box', ?, ?)
+            """
+            self.db.execute(query, (box_id, tag_name))
+
+    def update_tags(self, box_id, tags):
+        """Replace tags for a box."""
+        self.db.execute(
+            "DELETE FROM tags WHERE entity_type = 'box' AND entity_id = ?",
+            (box_id,)
+        )
+
+        if tags:
+            self.add_tags(box_id, tags)
+
+    def get_tags(self, box_id):
+        """Return tag names for a box."""
+        query = """
+            SELECT tag_name FROM tags
+            WHERE entity_type = 'box' AND entity_id = ?
+        """
+        rows = self.db.fetch_all(query, (box_id,))
+        return [row["tag_name"] for row in rows]
+
 
 class BoxShareModel(BaseModel):
     """DB model for box shares."""
@@ -415,16 +443,20 @@ class FileModel(BaseModel):
         return result
 
     def _add_tags(self, file_id, tags):
-        """Add tags to a file."""
-        for tag in tags:
-            tag_id = self._get_or_create_tag(tag)
-
-            query = "INSERT OR IGNORE INTO file_tags (file_id, tag_id) VALUES (?, ?)"
-            self.db.execute(query, (file_id, tag_id))
+        """Add tags to a file using polymorphic tags table."""
+        for tag_name in tags:
+            query = """
+                INSERT OR IGNORE INTO tags (entity_type, entity_id, tag_name)
+                VALUES ('file', ?, ?)
+            """
+            self.db.execute(query, (file_id, tag_name))
 
     def _update_tags(self, file_id, tags):
         """Replace tags for a file."""
-        self.db.execute("DELETE FROM file_tags WHERE file_id = ?", (file_id,))
+        self.db.execute(
+            "DELETE FROM tags WHERE entity_type = 'file' AND entity_id = ?",
+            (file_id,)
+        )
 
         if tags:
             self._add_tags(file_id, tags)
@@ -432,30 +464,11 @@ class FileModel(BaseModel):
     def _get_tags(self, file_id):
         """Return tag names for a file."""
         query = """
-            SELECT t.tag_name
-            FROM tags t
-            JOIN file_tags ft ON t.tag_id = ft.tag_id
-            WHERE ft.file_id = ?
+            SELECT tag_name FROM tags
+            WHERE entity_type = 'file' AND entity_id = ?
         """
-
         rows = self.db.fetch_all(query, (file_id,))
         return [row["tag_name"] for row in rows]
-
-    def _get_or_create_tag(self, tag_name):
-        """Return tag_id for name, creating the tag if missing."""
-        query = "SELECT tag_id FROM tags WHERE tag_name = ?"
-        row = self.db.fetch_one(query, (tag_name,))
-
-        if row:
-            return row["tag_id"]
-
-        query = "INSERT INTO tags (tag_name) VALUES (?)"
-        self.db.execute(query, (tag_name,))
-
-        row = self.db.fetch_one(
-            "SELECT tag_id FROM tags WHERE tag_name = ?", (tag_name,)
-        )
-        return row["tag_id"]
 
     def list_by_box(self, box_id, include_deleted=False, limit=None, offset=0):
         """List files in a box with optional filters."""
