@@ -54,34 +54,35 @@ FILES_AFTER_DELETE = """
     END;
 """
 
-FILE_TAGS_AFTER_INSERT = """
-    CREATE TRIGGER IF NOT EXISTS file_tags_afteri_fts
-    AFTER INSERT ON file_tags 
-    BEGIN 
-        UPDATE files_fts 
+# Triggers for polymorphic tags table (entity_type = 'file')
+TAGS_AFTER_INSERT = """
+    CREATE TRIGGER IF NOT EXISTS tags_afteri_fts
+    AFTER INSERT ON tags
+    WHEN NEW.entity_type = 'file'
+    BEGIN
+        UPDATE files_fts
         SET tags = (
-            SELECT COALESCE(GROUP_CONCAT(t.tag_name, ' '), '')
-            FROM tags t
-            JOIN file_tags ft ON ft.tag_id = t.tag_id 
-            WHERE ft.file_id = NEW.file_id 
+            SELECT COALESCE(GROUP_CONCAT(tag_name, ' '), '')
+            FROM tags
+            WHERE entity_type = 'file' AND entity_id = NEW.entity_id
         )
-        WHERE file_id = NEW.file_id;
-    END; 
+        WHERE file_id = NEW.entity_id;
+    END;
 """
 
-FILE_TAGS_AFTER_DELETE = """
-  CREATE TRIGGER IF NOT EXISTS file_tags_ad_fts
-  AFTER DELETE ON file_tags
-  BEGIN
-      UPDATE files_fts
-      SET tags = (
-          SELECT COALESCE(GROUP_CONCAT(t.tag_name, ' '), '')
-          FROM tags t
-          JOIN file_tags ft ON ft.tag_id = t.tag_id
-          WHERE ft.file_id = OLD.file_id
-      )
-      WHERE file_id = OLD.file_id;
-  END;
+TAGS_AFTER_DELETE = """
+    CREATE TRIGGER IF NOT EXISTS tags_afterd_fts
+    AFTER DELETE ON tags
+    WHEN OLD.entity_type = 'file'
+    BEGIN
+        UPDATE files_fts
+        SET tags = (
+            SELECT COALESCE(GROUP_CONCAT(tag_name, ' '), '')
+            FROM tags
+            WHERE entity_type = 'file' AND entity_id = OLD.entity_id
+        )
+        WHERE file_id = OLD.entity_id;
+    END;
 """
 
 
@@ -91,18 +92,17 @@ def init_fts(db):
     db.execute(FILES_AFTER_INSERT)
     db.execute(FILES_AFTER_UPDATE)
     db.execute(FILES_AFTER_DELETE)
-    db.execute(FILE_TAGS_AFTER_INSERT)
-    db.execute(FILE_TAGS_AFTER_DELETE)
+    db.execute(TAGS_AFTER_INSERT)
+    db.execute(TAGS_AFTER_DELETE)
 
 
 def tags_for(db, file_id):
-    # build space joined tag string
+    # build space joined tag string from polymorphic tags table
     rows = db.fetch_all(
         """
-        SELECT t.tag_name 
-        FROM tags t 
-        JOIN file_tags ft ON ft.tag_id = t.tag_id 
-        WHERE ft.file_id = ? 
+        SELECT tag_name
+        FROM tags
+        WHERE entity_type = 'file' AND entity_id = ?
         """,
         (file_id,),
     )
