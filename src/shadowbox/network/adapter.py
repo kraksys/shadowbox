@@ -143,7 +143,7 @@ def format_list(env):
         raise AccessDeniedError("You do not have read permission for this box.")
     fm = FileModel(env["db"])
     items = fm.list_by_box(env["box_id"], include_deleted=False, limit=1000, offset=0)
-    return "\n".join(f"{m.filename}: {m.size}" for m in items)
+    return ",\n".join(f"{m.file_id}: {{Filename: {m.filename}, Size: {m.size}, Tags: {m.tags}, Status: {m.status}}}" for m in items)
 
 
 def open_for_get(env, filename):
