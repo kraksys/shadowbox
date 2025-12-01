@@ -201,7 +201,9 @@ class FileManager:
         # Check Access
         if box.user_id != user_id:
             if not self.box_share_model.has_access(box_id, user_id, "write"):
-                raise AccessDeniedError(f"User '{user_id}' no write access to box '{box_id}'.")
+                raise AccessDeniedError(
+                    f"User '{user_id}' no write access to box '{box_id}'."
+                )
 
         # Check quota
         size = src.stat().st_size
@@ -210,7 +212,9 @@ class FileManager:
 
         # NEW: Extract Metadata before storage
         extracted_meta = self.metadata_extractor.extract(str(src))
-        detected_mime = extracted_meta.pop("mime_type", None) # Remove mime to store in dedicated col
+        detected_mime = extracted_meta.pop(
+            "mime_type", None
+        )  # Remove mime to store in dedicated col
 
         # Determine encryption setting
         if encrypt is None:
@@ -237,7 +241,7 @@ class FileManager:
             original_path=str(source_path),
             size=info["size"],
             hash_sha256=info["hash"],
-            mime_type=detected_mime, # Use detected mime type
+            mime_type=detected_mime,  # Use detected mime type
             owner=user["username"],
             tags=tags if tags else [],
             custom_metadata=final_custom_metadata,
@@ -277,6 +281,16 @@ class FileManager:
     def get_file_metadata(self, file_id: str) -> Optional[FileMetadata]:
         """Fetch a file's metadata from the database."""
         return self.file_model.get(file_id)
+
+    def list_file_versions(self, file_id):
+        """List versions for a file"""
+        manager = VersionManager(self.db)
+        return manager.list_versions(file_id)
+
+    def restore_file_version(self, file_id, version_id):
+        """Restore a specific file version as the active file"""
+        manager = VersionManager(self.db)
+        return manager.restore_version(file_id, version_id)
 
     def list_user_files(self, user_id: str) -> List[FileMetadata]:
         """List all active files for a user across boxes."""
@@ -428,13 +442,13 @@ class FileManager:
     def enable_box_encryption(self, user_id: str, box_id: str, password: str) -> bool:
         """Changing encryption state of a box is not supported."""
         raise ValueError("Changing encryption state of a box is not supported")
-    
+
     def update_file(
         self,
         file_id: str,
         source_path: str,
         change_description: str = "File updated",
-        encrypt: Optional[bool] = None
+        encrypt: Optional[bool] = None,
     ) -> FileMetadata:
         """Update an existing file with new content, versioning, and metadata extraction."""
         src = Path(source_path)
@@ -480,7 +494,7 @@ class FileManager:
             final_custom_metadata["encrypted"] = True
 
         # Update Record
-        current_metadata.filename = src.name 
+        current_metadata.filename = src.name
         current_metadata.size = info["size"]
         current_metadata.hash_sha256 = info["hash"]
         current_metadata.mime_type = detected_mime
@@ -492,26 +506,26 @@ class FileManager:
         self.user_model.update_quota(user_id, user["used_bytes"] + size_diff)
 
         return current_metadata
-    
+
     def add_files_bulk(
         self,
         user_id: str,
         box_id: str,
         file_paths: List[str],
         tags: Optional[List[str]] = None,
-        encrypt: Optional[bool] = None
+        encrypt: Optional[bool] = None,
     ) -> dict:
         """
         Add multiple files efficiently.
         Returns a dict: {'success': [FileMetadata], 'failed': [{'path': str, 'error': str}]}
         """
         results = {"success": [], "failed": []}
-        
-        # Validation and Setup 
+
+        # Validation and Setup
         user = self.user_model.get(user_id)
         if not user:
             raise UserNotFoundError(f"User {user_id} not found.")
-            
+
         box = self.get_box(box_id)
         if not box:
             raise BoxNotFoundError(f"Box {box_id} not found.")
@@ -523,7 +537,7 @@ class FileManager:
         # Pre-calculate total size to check quota
         total_batch_size = 0
         valid_paths = []
-        
+
         for p in file_paths:
             path_obj = Path(p)
             if not path_obj.exists():
@@ -542,7 +556,7 @@ class FileManager:
 
         # Process Files
         metadata_to_insert = []
-        
+
         for src in valid_paths:
             try:
                 # Extract Metadata
@@ -583,7 +597,7 @@ class FileManager:
         # 4. Bulk DB Insert
         if metadata_to_insert:
             self.file_model.create_many(metadata_to_insert)
-            
+
             # Update Quota ONCE
             new_usage = user["used_bytes"] + sum(m.size for m in metadata_to_insert)
             self.user_model.update_quota(user_id, new_usage)
@@ -591,7 +605,7 @@ class FileManager:
         return results
 
     def delete_files_bulk(self, file_ids: List[str], soft: bool = True) -> int:
-        """ Delete multiple files efficiently. Returns count of deleted files. """
+        """Delete multiple files efficiently. Returns count of deleted files."""
         if not file_ids:
             return 0
 
@@ -599,7 +613,7 @@ class FileManager:
         placeholders = ",".join(["?"] * len(file_ids))
         query = f"SELECT * FROM files WHERE file_id IN ({placeholders})"
         rows = self.db.fetch_all(query, tuple(file_ids))
-        
+
         if not rows:
             return 0
 
@@ -608,7 +622,9 @@ class FileManager:
 
         # Perform Deletion
         if soft:
-            update_sql = f"UPDATE files SET status = 'deleted' WHERE file_id IN ({placeholders})"
+            update_sql = (
+                f"UPDATE files SET status = 'deleted' WHERE file_id IN ({placeholders})"
+            )
             self.db.execute(update_sql, tuple(file_ids))
         else:
             delete_sql = f"DELETE FROM files WHERE file_id IN ({placeholders})"
