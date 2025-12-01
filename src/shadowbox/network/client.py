@@ -25,7 +25,6 @@ If no arguments given, defaults to LIST.
 import os
 import sys
 import socket
-import time  # not in use so far
 import threading
 from zeroconf import Zeroconf, ServiceBrowser, ServiceInfo
 SERVICE_TYPE = "_shadowbox._tcp.local."
@@ -173,7 +172,7 @@ def connect_and_request(ip, port, request_line, recv_file=False, out_path=None, 
 
 def get_server_address(code: str, timeout: float = 5.0):
     """
-    Discover a server with a specific code suffix (e.g., "icmf" -> _shadowboxicmf._tcp.local.).
+    Discover a server with a specific code suffix ("icmf" -> _shadowboxicmf._tcp.local.)
 
     Args:
         code (str): The specific letter/code to look for

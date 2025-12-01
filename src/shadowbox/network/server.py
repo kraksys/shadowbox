@@ -39,15 +39,13 @@ Default port = 9999
         python -m shadowbox.network.server --mode test --shared-dir ./shared_dir --port 9999
         python -m shadowbox.network.server --mode core --db ./shadowbox.db --storage-root ~/.shdwbox --username bob --port 9999
 """
-import json
 import os
 import socket
 import threading
-import sys
 import argparse
 import random
 import string
-import time
+
 
 from zeroconf import Zeroconf, ServiceInfo
 
@@ -606,4 +604,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    #share_with("","Tery","Atanas/default", "read")
