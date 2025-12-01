@@ -513,7 +513,6 @@ def share_with(code_to_share: str, username: str, box_name: str, permissions: st
     SERVICE_TYPE = f"_shadowbox{code_to_share}._tcp.local."
 
     #from adapter
-    share_box(context["env"], box_name, username, permissions)
     select_box(env, box_name)
 
     #broadcast it on the mDNS
