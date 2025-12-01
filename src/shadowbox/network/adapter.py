@@ -63,7 +63,7 @@ def check_permission(env, box_id, required_permission="read") -> bool:
 
     # If not the owner, check the shares table
     bsm = BoxShareModel(db)
-    return True #bsm.has_access(box_id, user_id, required_permission)
+    return bsm.has_access(box_id, user_id, required_permission)
 
 
 def find_by_filename(env, filename):
