@@ -77,13 +77,17 @@ class AddFileModal(ModalScreen[Optional[AddFileResult]]):
     def on_mount(self) -> None:  # pragma: no cover
         self.set_focus(self.path_input)
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:  # pragma: no cover - UI only
+    def on_button_pressed(
+        self, event: Button.Pressed
+    ) -> None:  # pragma: no cover - UI only
         if event.button.id == "cancel":
             self.dismiss(None)
             return
         path = self.path_input.value.strip()
         tags = [t.strip() for t in self.tags_input.value.split(",") if t.strip()]
-        self.dismiss(AddFileResult(path=path, tags=tags, encrypt=self.encrypt_box.value))
+        self.dismiss(
+            AddFileResult(path=path, tags=tags, encrypt=self.encrypt_box.value)
+        )
 
     def on_key(self, event) -> None:  # pragma: no cover
         if event.key == "escape":
@@ -92,7 +96,9 @@ class AddFileModal(ModalScreen[Optional[AddFileResult]]):
             # trigger primary action
             path = self.path_input.value.strip()
             tags = [t.strip() for t in self.tags_input.value.split(",") if t.strip()]
-            self.dismiss(AddFileResult(path=path, tags=tags, encrypt=self.encrypt_box.value))
+            self.dismiss(
+                AddFileResult(path=path, tags=tags, encrypt=self.encrypt_box.value)
+            )
 
 
 class DownloadResult:
@@ -163,6 +169,112 @@ class SearchModal(ModalScreen[Optional[SearchResult]]):
         elif event.key == "enter":
             q = self.q_input.value.strip()
             self.dismiss(SearchResult(query=q, scope_all=self.scope_box.value))
+
+
+class FileVersionsModal(ModalScreen):
+    """
+    Simple dialog that lists versions (historical) for a file and lets the user pick one to restore
+    """
+
+    def __init__(self, filename, versions):
+        super().__init__()
+        self.filename = filename
+        self.versions = versions
+        self.list_view = None
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog"):
+            yield Static("Versions for : %s" % self.filename, classes="title")
+            self.list_view = ListView()
+            for row in self.versions:
+                number = row.get("version_number", row.get("version", "?"))
+                size = row.get("size", 0)
+                created_at = row.get("crated_at", "")
+                label = "v%s . %s bytes . %s" % (number, size, created_at)
+                item = ListItem(Static(label))
+                self.list_view.append(item)
+            yield self.list_view
+            with Horizontal():
+                yield Button("Cancel (Esc)", id="cancel")
+                yield Button("Restore (Enter)", id="ok", variant="primary")
+
+    def on_mount(self) -> None:
+        if self.list_view is not None:
+            self.set_focus(self.list_view)
+
+    def selected_version_id(self):
+        if not self.list_view:
+            return None
+        if self.list_view.index is None:
+            return None
+        idx = self.list_view.index
+
+        if idx < 0 or idx >= len(self.versions):
+            return None
+
+        row = self.versions[idx]
+        return row.get("version_id")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "cancel":
+            self.dismiss(None)
+            return
+        version_id = self.selected_version_id()
+        if not version_id:
+            self.dismiss(None)
+            return
+        self.dismiss(version_id)
+
+    def on_key(self, event) -> None:
+        if event.key == "escape":
+            self.dismiss(None)
+        elif event.key == "enter":
+            version_id = self.selected_version_id()
+            if not version_id:
+                self.dismiss(None)
+            else:
+                self.dismiss(version_id)
+
+
+class TagSearchModal(ModalScreen):
+    """
+    Dialog to ask for a tag name and return it
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.tag_input = None
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog"):
+            yield Static("Filter by Tag", classes="title")
+            self.tag_input = Input(placeholder="tag name")
+            yield self.tag_input
+            with Horizontal():
+                yield Button("Cancel (Esc)", id="cancel")
+                yield Button("Filter (Enter)", id="ok", variant="primary")
+
+    def on_mount(self) -> None:
+        if self.tag_input is not None:
+            self.set_focus(self.tag_input)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "cancel":
+            self.dismiss(None)
+            return
+        value = ""
+        if self.tag_input is not None:
+            value = self.tag_input.value.strip()
+        self.dismiss(value or None)
+
+    def on_key(self, event) -> None:
+        if event.key == "escape":
+            self.dismiss(None)
+        elif event.key == "enter":
+            value = ""
+            if self.tag_input is not None:
+                value = self.tag_input.value.strip()
+            self.dismiss(value or None)
 
 
 class NewBoxResult:
@@ -282,7 +394,9 @@ class ShareBoxModal(ModalScreen[Optional[ShareBoxResult]]):
             yield Static("Share Box", classes="title")
             self.user_input = Input(placeholder="target user id")
             yield self.user_input
-            self.perm_input = Input(placeholder="permission (read/write/admin)", value="read")
+            self.perm_input = Input(
+                placeholder="permission (read/write/admin)", value="read"
+            )
             yield self.perm_input
             self.expiry_input = Input(placeholder="expiry ISO (optional)")
             yield self.expiry_input
@@ -482,6 +596,9 @@ class ShadowBoxApp(App):
         ("u", "unshare_box", "Unshare Box"),
         ("p", "peer_list", "Peers"),
         ("e", "edit_file", "Edit File"),
+        ("v", "show_versions", "File Versions"),
+        ("k", "backup_database", "Backup DB"),
+        ("t", "filter_by_tag", "Filter by Tag"),
     ]
 
     def __init__(self, ctx: AppContext | None = None):
@@ -544,13 +661,19 @@ class ShadowBoxApp(App):
 
         # Keep selection aligned with active box.
         for idx, item in enumerate(self.boxes.children):
-            if getattr(item, "data", None) and item.data.box_id == self.ctx.active_box.box_id:
+            if (
+                getattr(item, "data", None)
+                and item.data.box_id == self.ctx.active_box.box_id
+            ):
                 self.boxes.index = idx
                 break
         if self.shared_boxes and self.ctx.active_box:
             if self.ctx.active_box.user_id != self.ctx.user.user_id:
                 for idx, item in enumerate(self.shared_boxes.children):
-                    if getattr(item, "data", None) and item.data.box_id == self.ctx.active_box.box_id:
+                    if (
+                        getattr(item, "data", None)
+                        and item.data.box_id == self.ctx.active_box.box_id
+                    ):
                         self.shared_boxes.index = idx
                         break
 
@@ -612,7 +735,9 @@ class ShadowBoxApp(App):
         row = self.ctx.fm.user_model.get(self.ctx.user.user_id)
         if row:
             self.ctx.user.used_bytes = row.get("used_bytes", self.ctx.user.used_bytes)
-            self.ctx.user.quota_bytes = row.get("quota_bytes", self.ctx.user.quota_bytes)
+            self.ctx.user.quota_bytes = row.get(
+                "quota_bytes", self.ctx.user.quota_bytes
+            )
         used = _human_size(self.ctx.user.used_bytes)
         total = _human_size(self.ctx.user.quota_bytes)
         self._set_status(
@@ -658,9 +783,13 @@ class ShadowBoxApp(App):
             self._set_status("Select a file first")
             return
         self._set_status("Downloading...")
-        self.push_screen(DownloadModal(), lambda res: self._handle_download(res, file_id))
+        self.push_screen(
+            DownloadModal(), lambda res: self._handle_download(res, file_id)
+        )
 
-    def _handle_download(self, result: Optional["DownloadResult"], file_id: str) -> None:
+    def _handle_download(
+        self, result: Optional["DownloadResult"], file_id: str
+    ) -> None:
         if not result:
             return
         try:
@@ -676,7 +805,9 @@ class ShadowBoxApp(App):
             return
         filename = self.table.get_row_at(self.table.cursor_row)[0] if self.table else ""
         prompt = f"Delete file '{filename}'?"
-        self.push_screen(DeleteConfirmModal(prompt), lambda ok: self._handle_delete_file(ok, file_id))
+        self.push_screen(
+            DeleteConfirmModal(prompt), lambda ok: self._handle_delete_file(ok, file_id)
+        )
 
     def _handle_delete_file(self, confirmed: bool, file_id: str) -> None:
         if not confirmed:
@@ -727,6 +858,64 @@ class ShadowBoxApp(App):
             self.row_keys.append(f.file_id)
 
         self._set_status(f"Search: {len(hits)} result(s)")
+
+    def action_filter_by_tag(self):
+        """
+        Ask user for a tag name and filter files
+        """
+        self.push_screen(TagSearchModel(), self._handle_filter_by_tag)
+
+    def _handle_filter_by_tag(self, tag):
+        """
+        Apply the tag filter and update the files table 
+        """
+        if not tag: 
+            return 
+        if not self.table: 
+            return 
+
+        try:
+            user_id = self.ctx.user.user_id
+            box_id = None
+            if self.ctx.active_box: 
+                box_id = self.ctx.active_box.box_id
+
+            hits = search_by_tag(
+                self.ctx.db,
+                tag, 
+                user_id = user_id,
+                box_id = box_id, 
+                limit = 200,
+            )
+        except Exception as exc: 
+            self._set_status("Tag search failed: %s" % exc)
+            return 
+        
+        self.table.clear(columns=False)
+        self.row_keys = []
+
+        for f in hits: 
+            tags_text = ", ".join(f.tags) iof getattr(f, "tags", None) else "--"
+            status = f.status.value if hasattr(f.status, "value") else str(f.status)
+            if hasattr(f, "modified_at"):
+                try:
+                    modified = f.modified_at.isoformat(timespec="seconds")
+                except Exception: 
+                    modified = str(f.modified_at)
+
+            else: 
+                modified = ""
+
+            self.table.add_row(
+                f.filename, 
+                _human_size(getattr(f, "size", 0)),
+                tags_text, 
+                status, 
+                modifiedd, 
+                key=f.file_id,
+            )
+            self.row_keys.append(f.file_id)
+        self._set_status("Tag '%s': %d result(s)" % (tag, len(hits)))
 
     # Box CRUD
     def action_new_box(self) -> None:
@@ -783,7 +972,9 @@ class ShadowBoxApp(App):
     def action_box_info(self) -> None:
         if not self.ctx.active_box:
             return
-        info = self.ctx.fm.get_box_info(self.ctx.user.user_id, self.ctx.active_box.box_id)
+        info = self.ctx.fm.get_box_info(
+            self.ctx.user.user_id, self.ctx.active_box.box_id
+        )
         self.push_screen(BoxInfoModal(self.ctx.active_box, info))
 
     # Sharing
@@ -816,13 +1007,18 @@ class ShadowBoxApp(App):
         if self.ctx.active_box.user_id != self.ctx.user.user_id:
             self._set_status("Only owners can unshare boxes")
             return
-        self.push_screen(UnshareModal(self.ctx.active_box.box_id, self.ctx.fm.box_share_model), self._handle_unshare)
+        self.push_screen(
+            UnshareModal(self.ctx.active_box.box_id, self.ctx.fm.box_share_model),
+            self._handle_unshare,
+        )
 
     def _handle_unshare(self, result: Optional[str]) -> None:
         if not result:
             return
         try:
-            self.ctx.fm.unshare_box(self.ctx.active_box.box_id, self.ctx.user.user_id, result)
+            self.ctx.fm.unshare_box(
+                self.ctx.active_box.box_id, self.ctx.user.user_id, result
+            )
             self._set_status("Unshared")
         except Exception as exc:
             self._set_status(f"Unshare failed: {exc}")
@@ -861,6 +1057,58 @@ class ShadowBoxApp(App):
             self._set_status("Updated file metadata")
         except Exception as exc:  # pragma: no cover
             self._set_status(f"Update failed: {exc}")
+
+    def action_show_versions(self):
+        """Show a list of historical versions for the selected file. User can pick one version to restore as the active file"""
+        file_id = self._selected_file_id()
+        if not file_id:
+            self._set_status("Select a file first")
+            return
+        try:
+            versions = self.ctx.fm.list_file_versions(file_id)
+        except Exception as exc:
+            self._set_status("Load versions failed: %s" % exc)
+            return
+        if not versions:
+            self._set_status("No versions for this file")
+            return
+
+        meta = self.ctx.fm.get_file_metadata(file_id)
+        filename = meta.filename if meta else file_id
+
+        self.push_screen(
+            FileVersionsModal(filename, versions),
+            lambda version_id: self._handle_restore_version(file_id, version_id),
+        )
+
+    def handle_restore_version(self, file_id, version_id):
+        """Apply the chosen (historical) version if exists, and refresh the table"""
+        if not version_id:
+            return
+        try:
+            ok = self.ctx.fm.restore_file_version(file_id, version_id)
+            if not ok:
+                self._set_status("Restore failed")
+                return
+            self.refresh_files()
+            self._set_status("Restored Version")
+        except Exception as exc:
+            self._set_status("Restore failed: %s" % exc)
+
+    def action_backup_database(self):
+        """Create a simple copy backup of the SQLite DB File"""
+        import datetime
+        import os
+
+        try:
+            now = datetime.datetime.utcnow()
+            name = "backup-%s.sqlite" % now.strftime("%Y%m%d-%H%M%S")
+            dest_path = os.path.join(os.getcwd(), name)
+
+            self.ctx.db.backup(dest_path)
+            self._set_status("Backup saved to %s" % dest_path)
+        except Exception as exc:
+            self._set_status("Backup Failed: %s" % exc)
 
     def _persist_last_box(self, box_id: str) -> None:
         from shadowbox.frontend.cli.config_store import load_config, save_config
