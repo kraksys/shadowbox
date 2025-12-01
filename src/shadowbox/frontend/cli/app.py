@@ -861,60 +861,60 @@ class ShadowBoxApp(App):
 
     def action_filter_by_tag(self):
         """
-        Ask user for a tag name and filter files
+        Ask the user for a tag name and filter files by that tag.
         """
-        self.push_screen(TagSearchModel(), self._handle_filter_by_tag)
+        self.push_screen(TagSearchModal(), self._handle_filter_by_tag)
 
     def _handle_filter_by_tag(self, tag):
         """
-        Apply the tag filter and update the files table 
+        Apply the tag filter and update the files table.
         """
-        if not tag: 
-            return 
-        if not self.table: 
-            return 
+        if not tag:
+            return
+        if not self.table:
+            return
 
         try:
             user_id = self.ctx.user.user_id
             box_id = None
-            if self.ctx.active_box: 
+            if self.ctx.active_box:
                 box_id = self.ctx.active_box.box_id
 
             hits = search_by_tag(
                 self.ctx.db,
-                tag, 
-                user_id = user_id,
-                box_id = box_id, 
-                limit = 200,
+                tag,
+                user_id=user_id,
+                box_id=box_id,
+                limit=200,
             )
-        except Exception as exc: 
+        except Exception as exc:  # pragma: no cover - UI-only
             self._set_status("Tag search failed: %s" % exc)
-            return 
-        
+            return
+
         self.table.clear(columns=False)
         self.row_keys = []
 
-        for f in hits: 
-            tags_text = ", ".join(f.tags) iof getattr(f, "tags", None) else "--"
+        for f in hits:
+            tags_text = ", ".join(f.tags) if getattr(f, "tags", None) else "--"
             status = f.status.value if hasattr(f.status, "value") else str(f.status)
             if hasattr(f, "modified_at"):
                 try:
                     modified = f.modified_at.isoformat(timespec="seconds")
-                except Exception: 
+                except Exception:
                     modified = str(f.modified_at)
-
-            else: 
+            else:
                 modified = ""
 
             self.table.add_row(
-                f.filename, 
+                f.filename,
                 _human_size(getattr(f, "size", 0)),
-                tags_text, 
-                status, 
-                modifiedd, 
+                tags_text,
+                status,
+                modified,
                 key=f.file_id,
             )
             self.row_keys.append(f.file_id)
+
         self._set_status("Tag '%s': %d result(s)" % (tag, len(hits)))
 
     # Box CRUD
