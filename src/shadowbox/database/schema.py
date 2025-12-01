@@ -94,23 +94,15 @@ CREATE_TABLES = [
         UNIQUE(file_id, version_number)
     )
     """,
-    # Tags table
+    # Polymorphic tags table - supports tagging both files and boxes
+    # This is a weak entity that depends on the parent entity (file or box)
     """
     CREATE TABLE IF NOT EXISTS tags (
-        tag_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        tag_name TEXT UNIQUE NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-    """,
-    # File-tag association table
-    """
-    CREATE TABLE IF NOT EXISTS file_tags (
-        file_id TEXT NOT NULL,
-        tag_id INTEGER NOT NULL,
+        entity_type TEXT NOT NULL CHECK (entity_type IN ('file', 'box')),
+        entity_id TEXT NOT NULL,
+        tag_name TEXT NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (file_id, tag_id),
-        FOREIGN KEY (file_id) REFERENCES files(file_id) ON DELETE CASCADE,
-        FOREIGN KEY (tag_id) REFERENCES tags(tag_id) ON DELETE CASCADE
+        PRIMARY KEY (entity_type, entity_id, tag_name)
     )
     """,
     # Deduplication table,
@@ -144,8 +136,9 @@ CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_files_filename ON files(filename)",
     "CREATE INDEX IF NOT EXISTS idx_file_versions_file_id ON file_versions(file_id)",
     "CREATE INDEX IF NOT EXISTS idx_file_versions_user_id ON file_versions(user_id)",
-    "CREATE INDEX IF NOT EXISTS idx_file_tags_file_id ON file_tags(file_id)",
-    "CREATE INDEX IF NOT EXISTS idx_file_tags_tag_id ON file_tags(tag_id)",
+    # Indexes for polymorphic tags table
+    "CREATE INDEX IF NOT EXISTS idx_tags_entity ON tags(entity_type, entity_id)",
+    "CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(tag_name)",
     "CREATE INDEX IF NOT EXISTS idx_boxes_user_id ON boxes(user_id)",
     "CREATE INDEX IF NOT EXISTS idx_boxes_share_token ON boxes(share_token)",
     "CREATE INDEX IF NOT EXISTS idx_box_shares_box_id ON box_shares(box_id)",
@@ -211,7 +204,6 @@ def get_drop_schema():
         List of DROP TABLE statements
     """
     return [
-        "DROP TABLE IF EXISTS file_tags",
         "DROP TABLE IF EXISTS tags",
         "DROP TABLE IF EXISTS box_shares",
         "DROP TABLE IF EXISTS file_versions",
