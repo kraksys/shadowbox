@@ -606,5 +606,5 @@ def main():
 
 
 if __name__ == "__main__":
-    #main()
-    share_with("","Tery","Atanas/default", "read")
+    main()
+    #share_with("","Tery","Atanas/default", "read")
