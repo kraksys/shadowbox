@@ -39,12 +39,14 @@ Default port = 9999
         python -m shadowbox.network.server --mode test --shared-dir ./shared_dir --port 9999
         python -m shadowbox.network.server --mode core --db ./shadowbox.db --storage-root ~/.shdwbox --username bob --port 9999
 """
-
 import os
 import socket
 import threading
-import sys
 import argparse
+import random
+import string
+
+
 from zeroconf import Zeroconf, ServiceInfo
 
 from .adapter import init_env, format_list, open_for_get, finalize_put, delete_filename, select_box, list_boxes, share_box, list_available_users, list_shared_with_user
@@ -53,6 +55,8 @@ SERVICE_TYPE = "_shadowbox._tcp.local."
 file_locks = {}
 file_locks_lock = threading.Lock()
 
+GLOBAL_LISTENING_SOCKET = None
+SERVER_SHOULD_STOP = threading.Event()
 
 def get_file_lock(path):
     """Return a Lock object for a given path."""
@@ -89,6 +93,8 @@ def get_local_ip():
         return "127.0.0.1"
     finally:
         s.close()
+
+
 
 
 def handle_client(conn, addr, context):
@@ -368,7 +374,7 @@ def handle_client(conn, addr, context):
                     box_name = parts[1]
                     share_with_user = parts[2]
                     permission = parts[3] if len(parts) > 3 else "read"
-                    response = share_box(context["env"], box_name, share_with_user, permission)
+                    response = share_box(context["env"], box_name, share_with_user, permission) #look at this when calling share box and spinning up the server so we can avoid repetitions
                     conn.sendall(response.encode())
             else:
                 conn.sendall(b"ERROR: Command only available in core mode\n")
@@ -385,6 +391,11 @@ def handle_client(conn, addr, context):
                 conn.sendall(response.encode())
             else:
                 conn.sendall(b"ERROR: Command only available in core mode\n")
+        elif line.upper() == "STOP":
+            conn.sendall(b"OK: Server is shutting down.\n")
+            stop_server()
+
+
         else:
             msg = "ERROR - Unknown command\n"
             conn.sendall(msg.encode())
@@ -400,22 +411,47 @@ def handle_client(conn, addr, context):
 
 def start_tcp_server(context, port):
     """Start a simple threaded TCP server."""
+    global GLOBAL_LISTENING_SOCKET, SERVER_SHOULD_STOP
+
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.bind(("", port))
     s.listen(5)
+
+    GLOBAL_LISTENING_SOCKET = s
+    SERVER_SHOULD_STOP.clear()
     if context["mode"] == "test":
         print(f"TCP server listening on port {port}, serving '{context['shared_dir']}'")
     else: 
         print(f"TCP server listening on port {port}, core mode (DB+Storage)")
-    while True:
-        conn, addr = s.accept()
-        t = threading.Thread(target=handle_client, args=(conn, addr, context), daemon=True)
-        t.start()
+    while not SERVER_SHOULD_STOP.is_set():
+        try:
+            # Use a short timeout so the loop can periodically check the SERVER_SHOULD_STOP flag
+            s.settimeout(0.5)
+            conn, addr = s.accept()
+            s.settimeout(None)  # Clear timeout after connection is accepted
+            t = threading.Thread(target=handle_client, args=(conn, addr, context), daemon=True)
+            t.start()
+        except socket.timeout:
+            continue  # Timeout occurred, loop back to check SERVER_SHOULD_STOP
+        except Exception as e:
+            # This handles the exception raised when GLOBAL_LISTENING_SOCKET.close() is called in stop_server()
+            if not SERVER_SHOULD_STOP.is_set():
+                print(f"Unexpected error in server loop: {e}")
+            break  # Exit the loop when the socket is closed
+
+        # Cleanup after loop breaks
+    if GLOBAL_LISTENING_SOCKET:
+        try:
+            GLOBAL_LISTENING_SOCKET.close()
+        except Exception:
+            pass
+        GLOBAL_LISTENING_SOCKET = None
+    print("TCP server listener stopped.")
 
 
 # Zeroconf advertisement
-def advertise_service(name, port):
+def advertise_service(name, port, service):
     """Advertise this server using Zeroconf."""
     zeroconf = Zeroconf()
     local_ip = get_local_ip()
@@ -423,16 +459,102 @@ def advertise_service(name, port):
     props = {"name": name, "version": "1.0"}
 
     info = ServiceInfo(
-        SERVICE_TYPE,
-        f"{name}.{SERVICE_TYPE}",
+        service,
+        f"{name}.{service}",
         addresses=[local_ip_bytes],
         port=port,
         properties=props,
         server=f"{socket.gethostname()}.local.",
     )
     zeroconf.register_service(info)
-    print(f"Zeroconf service registered: {name} @ {local_ip}:{port}")
+    print(f"Zeroconf service registered: {name} @ {local_ip}:{port}, SERVICE_TYPE = {service}")
     return zeroconf, info
+
+
+def give_code() -> str:
+    # choose from all lowercase letter
+    letters = string.ascii_lowercase
+    result_str = ''.join(random.choice(letters) for i in range(4))
+    return result_str
+
+def share_with(code_to_share: str, username: str, box_name: str, permissions: str, db = "./shadowbox.db", storage_root = None, port = 9999):
+    """
+    Function that integrates everything from adapter and server logic to spin up a server every time a User wants to share a box.
+    Usage:
+
+    the 4 letters that you need to give to the other person
+                |
+    share_with(code, username, box_name, permissions, db, storage_root, port)
+                        |                     |
+                        |                 read/write
+                        |
+            this username can be whatever you want
+            so you can say (I want to share with Atanas) and the
+            user is going to be "Atanas" in the db, but it
+            can also be "yabadabadoo"
+
+    !!! If you give the code "" it will be shared with everyone
+    #TODO Implement share with everyone option code_to_share = ""
+    This will automatically update the db and start up the server with the given username.
+    """
+    if not code_to_share:
+        code_to_share = ""
+
+    #create the env that we will use for the server
+    env = init_env(db_path=db, storage_root=storage_root, username=username)
+    # {"db": db, "storage": storage, "username": uname, "user_id": user_id, "box_id": default_box["box_id"]}
+    context = {"mode": "core", "env": env}
+    name = f"FileServer-{socket.gethostname()}"
+
+    #insert the code in the service name
+    global SERVICE_TYPE
+    SERVICE_TYPE = f"_shadowbox{code_to_share}._tcp.local."
+
+    #from adapter
+    select_box(env, box_name)
+
+    #broadcast it on the mDNS
+    zeroconf, info = advertise_service(name, port, service=SERVICE_TYPE)
+
+    #start the server
+    try:
+        start_tcp_server(context, port)
+    except KeyboardInterrupt:
+        print("\nShutting down...")
+    finally:
+
+        print("Unregistering Zeroconf service...")
+        try:
+            zeroconf.unregister_service(info)
+        except Exception:
+            pass
+        zeroconf.close()
+
+def share_with_everyone(box_name: str, permissions: str, db = "./shadowbox.db", storage_root = None, port = 9999):
+    share_with(code_to_share="", username="Common_username", box_name = box_name, permissions = permissions, db = db, storage_root = storage_root, port = port)
+
+
+def stop_server():
+    """
+    Stops the main TCP listening socket and signals the server thread to shut down.
+    This is intended to be called internally or externally.
+    """
+    global GLOBAL_LISTENING_SOCKET, SERVER_SHOULD_STOP
+
+    if not GLOBAL_LISTENING_SOCKET:
+        print("Server socket is already closed or not initialized.")
+        return
+
+    print("Signaling server shutdown...")
+    SERVER_SHOULD_STOP.set()
+
+    # Closing the socket will interrupt the blocking s.accept() call in start_tcp_server,
+    # causing it to raise an exception break the while loop.
+    try:
+        GLOBAL_LISTENING_SOCKET.close()
+    except Exception as e:
+        print(f"Error closing server socket: {e}")
+
 
 
 # Main entry point (augmented with argparse)

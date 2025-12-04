@@ -5,9 +5,12 @@ Start here with `python -m shadowbox.frontend.cli.app`
 
 from __future__ import annotations
 
+import subprocess
+import threading
 from datetime import datetime
 from typing import Iterable, Optional
 
+from textual import on
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.widgets import (
@@ -21,13 +24,16 @@ from textual.widgets import (
     ListItem,
     ListView,
     Static,
+    Tree,
 )
 from textual.screen import ModalScreen
 
 from shadowbox.core.models import FileMetadata
 from shadowbox.frontend.cli.context import AppContext, build_context
-from shadowbox.database.search import search_fts
-from shadowbox.network.client import ServiceFinder, connect_and_request
+from shadowbox.database.search import fuzzy_search_fts
+from shadowbox.network.client import get_server_address, connect_and_request
+from shadowbox.network.server import give_code, start_tcp_server, stop_server, advertise_service
+from shadowbox.network.adapter import init_env, select_box
 
 
 def _human_size(num: int) -> str:
@@ -135,40 +141,142 @@ class DownloadModal(ModalScreen[Optional[DownloadResult]]):
             self.dismiss(DownloadResult(dest=dest))
 
 
-class SearchResult:
-    def __init__(self, query: str, scope_all: bool):
-        self.query = query
-        self.scope_all = scope_all
+class LiveSearchResult:
+    """Result from live search - selected box and file."""
+    def __init__(self, box_id: str, file_id: str):
+        self.box_id = box_id
+        self.file_id = file_id
 
 
-class SearchModal(ModalScreen[Optional[SearchResult]]):
-    def compose(self) -> ComposeResult:  # pragma: no cover
-        with Vertical(classes="dialog"):
-            yield Static("Search", classes="title")
-            self.q_input = Input(placeholder="query text")
-            yield self.q_input
-            self.scope_box = Checkbox("Search all boxes (unchecked = current box)")
-            yield self.scope_box
-            with Horizontal():
-                yield Button("Cancel (Esc)", id="cancel")
-                yield Button("Search (Enter)", id="ok", variant="primary")
+class LiveSearchScreen(ModalScreen[Optional[LiveSearchResult]]):
+    """Telescope-style live search with hierarchical results."""
 
-    def on_mount(self) -> None:  # pragma: no cover
-        self.set_focus(self.q_input)
+    CSS = """
+    LiveSearchScreen {
+        align: center middle;
+        background: rgba(0,0,0,0.6);
+    }
+    LiveSearchScreen > Vertical {
+        width: 80%;
+        height: 80%;
+        padding: 1;
+        border: heavy $surface;
+        background: $boost;
+    }
+    LiveSearchScreen #search-input {
+        margin-bottom: 1;
+    }
+    LiveSearchScreen #results-tree {
+        height: 1fr;
+    }
+    LiveSearchScreen #status-line {
+        height: 1;
+        color: $text-muted;
+    }
+    """
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:  # pragma: no cover
-        if event.button.id == "cancel":
-            self.dismiss(None)
+    def __init__(self, ctx: "AppContext"):
+        super().__init__()
+        self.ctx = ctx
+        self._debounce_timer = None
+        # Cache: box_id -> box_name
+        self._box_names: dict[str, str] = {}
+        self._load_box_names()
+
+    def _load_box_names(self) -> None:
+        """Pre-load box names for display."""
+        try:
+            user_boxes = self.ctx.fm.list_user_boxes(self.ctx.user.user_id)
+            shared_boxes = self.ctx.fm.list_shared_boxes(self.ctx.user.user_id)
+            for box in user_boxes + shared_boxes:
+                self._box_names[box.box_id] = box.box_name
+        except Exception:
+            pass
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Static("Search Files", classes="title")
+            yield Input(placeholder="Type to search...", id="search-input")
+            yield Tree("Results", id="results-tree")
+            yield Static("", id="status-line")
+
+    def on_mount(self) -> None:
+        self.query_one("#search-input", Input).focus()
+        tree = self.query_one("#results-tree", Tree)
+        tree.show_root = False
+
+    @on(Input.Changed, "#search-input")
+    def on_search_changed(self, event: Input.Changed) -> None:
+        """Debounced live search as user types."""
+        if self._debounce_timer:
+            self._debounce_timer.stop()
+        self._debounce_timer = self.set_timer(0.15, self._do_search)
+
+    def _do_search(self) -> None:
+        """Execute search and update tree."""
+        query = self.query_one("#search-input", Input).value.strip()
+        tree = self.query_one("#results-tree", Tree)
+        status = self.query_one("#status-line", Static)
+
+        tree.clear()
+
+        if not query:
+            status.update("Type to search...")
             return
-        q = self.q_input.value.strip()
-        self.dismiss(SearchResult(query=q, scope_all=self.scope_box.value))
 
-    def on_key(self, event) -> None:  # pragma: no cover
+        try:
+            hits = fuzzy_search_fts(
+                self.ctx.db,
+                query,
+                user_id=self.ctx.user.user_id,
+                limit=100,
+            )
+        except Exception as exc:
+            status.update(f"Search error: {exc}")
+            return
+
+        if not hits:
+            status.update("No results")
+            return
+
+        # Group by box_id
+        by_box: dict[str, list] = {}
+        for f in hits:
+            if f.box_id not in by_box:
+                by_box[f.box_id] = []
+            by_box[f.box_id].append(f)
+
+        # Build tree
+        file_count = 0
+        for box_id, files in by_box.items():
+            box_name = self._box_names.get(box_id, box_id[:8])
+            box_node = tree.root.add(f"[bold]{box_name}[/bold]", expand=True)
+            box_node.data = {"type": "box", "box_id": box_id}
+
+            for f in files:
+                size_str = _human_size(f.size)
+                file_node = box_node.add_leaf(f"{f.filename}  [dim]{size_str}[/dim]")
+                file_node.data = {"type": "file", "box_id": box_id, "file_id": f.file_id}
+                file_count += 1
+
+        status.update(f"{file_count} file(s) in {len(by_box)} box(es)")
+
+    @on(Tree.NodeSelected, "#results-tree")
+    def on_tree_selected(self, event: Tree.NodeSelected) -> None:
+        """Handle selection - if file, dismiss with result."""
+        node_data = event.node.data
+        if not node_data:
+            return
+
+        if node_data.get("type") == "file":
+            self.dismiss(LiveSearchResult(
+                box_id=node_data["box_id"],
+                file_id=node_data["file_id"],
+            ))
+
+    def on_key(self, event) -> None:
         if event.key == "escape":
             self.dismiss(None)
-        elif event.key == "enter":
-            q = self.q_input.value.strip()
-            self.dismiss(SearchResult(query=q, scope_all=self.scope_box.value))
 
 
 class FileVersionsModal(ModalScreen):
@@ -362,7 +470,6 @@ class BoxInfoModal(ModalScreen[None]):
             yield Static(f"Box: {self.box.box_name}", classes="title")
             lines = [
                 f"Owner: {self.box.user_id}",
-                f"Shared: {self.box.is_shared}",
                 f"Encryption: {self.box.settings.get('encryption_enabled', False)}",
                 f"Files: {self.info.get('file_count')}",
                 f"Total size: {self.info.get('total_size', 0)} bytes",
@@ -381,106 +488,114 @@ class BoxInfoModal(ModalScreen[None]):
             self.dismiss(None)
 
 
+class ErrorModal(ModalScreen[None]):
+    """Modal for displaying error messages prominently."""
+    def __init__(self, title: str, message: str):
+        super().__init__()
+        self.error_title = title
+        self.error_message = message
+
+    def compose(self) -> ComposeResult:  # pragma: no cover
+        with Vertical(classes="dialog"):
+            yield Static(self.error_title, classes="title")
+            yield Static(self.error_message)
+            yield Static("")
+            yield Button("OK", id="ok", variant="primary")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:  # pragma: no cover
+        self.dismiss(None)
+
+    def on_key(self, event) -> None:  # pragma: no cover
+        if event.key in ("escape", "enter"):
+            self.dismiss(None)
+
+
 class ShareBoxResult:
-    def __init__(self, user_id: str, permission: str, expires_at=None):
-        self.user_id = user_id
+    """Result from the share modal - contains share type and permission."""
+    def __init__(self, is_public: bool, permission: str):
+        self.is_public = is_public
         self.permission = permission
-        self.expires_at = expires_at
 
 
 class ShareBoxModal(ModalScreen[Optional[ShareBoxResult]]):
+    """Modal to initiate sharing a box over LAN via mDNS."""
+    def __init__(self, box_name: str):
+        super().__init__()
+        self.box_name = box_name
+
     def compose(self) -> ComposeResult:  # pragma: no cover
         with Vertical(classes="dialog"):
-            yield Static("Share Box", classes="title")
-            self.user_input = Input(placeholder="target user id")
-            yield self.user_input
-            self.perm_input = Input(
-                placeholder="permission (read/write/admin)", value="read"
-            )
+            yield Static(f"Share Box: {self.box_name}", classes="title")
+            yield Label("Share type:")
+            self.public_checkbox = Checkbox("Public (visible to everyone on LAN)")
+            yield self.public_checkbox
+            yield Label("Permission level:")
+            self.perm_input = Input(placeholder="read or write", value="read")
             yield self.perm_input
-            self.expiry_input = Input(placeholder="expiry ISO (optional)")
-            yield self.expiry_input
             with Horizontal():
                 yield Button("Cancel (Esc)", id="cancel")
                 yield Button("Share (Enter)", id="ok", variant="primary")
 
     def on_mount(self) -> None:  # pragma: no cover
-        self.set_focus(self.user_input)
+        self.set_focus(self.public_checkbox)
+
+    def _submit(self) -> None:
+        perm = self.perm_input.value.strip() or "read"
+        if perm not in ("read", "write"):
+            perm = "read"
+        self.dismiss(ShareBoxResult(
+            is_public=self.public_checkbox.value,
+            permission=perm
+        ))
 
     def on_button_pressed(self, event: Button.Pressed) -> None:  # pragma: no cover
         if event.button.id == "cancel":
             self.dismiss(None)
-            return
-        expiry_txt = self.expiry_input.value.strip()
-        expires_at = None
-        if expiry_txt:
-            try:
-                expires_at = datetime.fromisoformat(expiry_txt)
-            except Exception:
-                expires_at = None
-        self.dismiss(
-            ShareBoxResult(
-                user_id=self.user_input.value.strip(),
-                permission=self.perm_input.value.strip() or "read",
-                expires_at=expires_at,
-            )
-        )
+        else:
+            self._submit()
 
     def on_key(self, event) -> None:  # pragma: no cover
         if event.key == "escape":
             self.dismiss(None)
         elif event.key == "enter":
-            expiry_txt = self.expiry_input.value.strip()
-            expires_at = None
-            if expiry_txt:
-                try:
-                    expires_at = datetime.fromisoformat(expiry_txt)
-                except Exception:
-                    expires_at = None
-            self.dismiss(
-                ShareBoxResult(
-                    user_id=self.user_input.value.strip(),
-                    permission=self.perm_input.value.strip() or "read",
-                    expires_at=expires_at,
-                )
-            )
+            self._submit()
 
 
-class UnshareModal(ModalScreen[Optional[str]]):
-    def __init__(self, box_id: str, share_model):
+class ShareCodeModal(ModalScreen[None]):
+    """Modal displaying the generated share code with copy functionality."""
+    def __init__(self, code: str, box_name: str, permission: str, owner: str):
         super().__init__()
-        self.box_id = box_id
-        self.share_model = share_model
+        self.code = code
+        self.box_name = box_name
+        self.permission = permission
+        self.owner = owner
 
     def compose(self) -> ComposeResult:  # pragma: no cover
         with Vertical(classes="dialog"):
-            yield Static("Unshare Box", classes="title")
-            users = [
-                share["shared_with_user_id"]
-                for share in self.share_model.list_by_box(self.box_id)
-            ]
-            users_str = ", ".join(users) if users else "No shares"
-            yield Static(f"Shared with: {users_str}")
-            self.user_input = Input(placeholder="user id to remove")
-            yield self.user_input
+            yield Static("Box Shared!", classes="title")
+            yield Static(f"Box: {self.box_name}")
+            yield Static(f"Permission: {self.permission}")
+            yield Static(f"Owner: {self.owner}")
+            yield Static("")
+            yield Static(f"Share Code: {self.code}", classes="title")
+            yield Static("")
             with Horizontal():
-                yield Button("Cancel (Esc)", id="cancel")
-                yield Button("Remove (Enter)", id="ok", variant="primary")
-
-    def on_mount(self) -> None:  # pragma: no cover
-        self.set_focus(self.user_input)
+                yield Button("Copy Code", id="copy")
+                yield Button("Done", id="done", variant="primary")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:  # pragma: no cover
-        if event.button.id == "cancel":
+        if event.button.id == "copy":
+            try:
+                subprocess.run(["pbcopy"], input=self.code.encode(), check=True)
+                self.notify("Code copied to clipboard!")
+            except Exception:
+                self.notify("Could not copy to clipboard", severity="error")
+        else:
             self.dismiss(None)
-            return
-        self.dismiss(self.user_input.value.strip())
 
     def on_key(self, event) -> None:  # pragma: no cover
-        if event.key == "escape":
+        if event.key in ("escape", "enter"):
             self.dismiss(None)
-        elif event.key == "enter":
-            self.dismiss(self.user_input.value.strip())
 
 
 class EditFileResult:
@@ -525,39 +640,70 @@ class EditFileModal(ModalScreen[Optional[EditFileResult]]):
             self.dismiss(EditFileResult(self.tags_input.value, self.desc_input.value))
 
 
-class PeerListModal(ModalScreen[None]):
-    def __init__(self):
+class ConnectResult:
+    """Result from connect modal - the 4-letter code entered."""
+    def __init__(self, code: str):
+        self.code = code
+
+
+class ConnectModal(ModalScreen[Optional[ConnectResult]]):
+    """Modal to enter a 4-letter share code to connect to a remote box."""
+    def compose(self) -> ComposeResult:  # pragma: no cover
+        with Vertical(classes="dialog"):
+            yield Static("Connect to Shared Box", classes="title")
+            yield Label("Enter the 4-letter share code:")
+            self.code_input = Input(placeholder="XXXX", max_length=4)
+            yield self.code_input
+            yield Static("")
+            self.status_label = Static("")
+            yield self.status_label
+            with Horizontal():
+                yield Button("Cancel (Esc)", id="cancel")
+                yield Button("Connect (Enter)", id="ok", variant="primary")
+
+    def on_mount(self) -> None:  # pragma: no cover
+        self.set_focus(self.code_input)
+
+    def _submit(self) -> None:
+        code = self.code_input.value.strip().lower()
+        if len(code) != 4:
+            self.status_label.update("Code must be 4 characters")
+            return
+        self.dismiss(ConnectResult(code=code))
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:  # pragma: no cover
+        if event.button.id == "cancel":
+            self.dismiss(None)
+        else:
+            self._submit()
+
+    def on_key(self, event) -> None:  # pragma: no cover
+        if event.key == "escape":
+            self.dismiss(None)
+        elif event.key == "enter":
+            self._submit()
+
+
+class ConnectSuccessModal(ModalScreen[None]):
+    """Modal showing successful connection to a remote box."""
+    def __init__(self, code: str, ip: str, port: int, files_preview: str):
         super().__init__()
-        self.output = Static("Discovering peers...", classes="title")
-        self.info = None
+        self.code = code
+        self.ip = ip
+        self.port = port
+        self.files_preview = files_preview
 
     def compose(self) -> ComposeResult:  # pragma: no cover
         with Vertical(classes="dialog"):
-            yield Static("Peers (LAN discovery)", classes="title")
-            yield self.output
+            yield Static("Connected!", classes="title")
+            yield Static(f"Code: {self.code}")
+            yield Static(f"Address: {self.ip}:{self.port}")
+            yield Static("")
+            yield Static("Files:")
+            yield Static(self.files_preview or "(empty)")
+            yield Static("")
             with Horizontal():
-                yield Button("Close (Esc/Enter)", id="close")
-
-    def on_mount(self) -> None:  # pragma: no cover
-        # kick off discovery without blocking UI
-        self.set_interval(0.1, self._discover_and_list, pause=False, repeat=False)
-
-    def _discover_and_list(self) -> None:
-        try:
-            finder = ServiceFinder()
-            info = finder.wait_for_service()
-            finder.close()
-            if not info:
-                self.output.update("No peers found.")
-                return
-            self.info = info
-            res = connect_and_request(info["ip"], info["port"], "LIST")
-            text = res.get("text", "").strip() if isinstance(res, dict) else str(res)
-            self.output.update(
-                f"Found: {info['name']} @ {info['ip']}:{info['port']}\n\nFiles:\n{text or '(empty)'}"
-            )
-        except Exception as exc:
-            self.output.update(f"Discovery/List failed: {exc}")
+                yield Button("Close", id="close", variant="primary")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:  # pragma: no cover
         self.dismiss(None)
@@ -592,9 +738,8 @@ class ShadowBoxApp(App):
         ("n", "new_box", "New Box"),
         ("x", "delete_box", "Delete Box"),
         ("b", "box_info", "Box Info"),
-        ("s", "share_box", "Share Box"),
-        ("u", "unshare_box", "Unshare Box"),
-        ("p", "peer_list", "Peers"),
+        ("s", "share_box", "Share"),
+        ("c", "connect", "Connect"),
         ("e", "edit_file", "Edit File"),
         ("v", "show_versions", "File Versions"),
         ("k", "backup_database", "Backup DB"),
@@ -607,9 +752,18 @@ class ShadowBoxApp(App):
 
         self.boxes: ListView | None = None
         self.shared_boxes: ListView | None = None
+        self.public_boxes: ListView | None = None
         self.table: DataTable | None = None
         self.status: Static | None = None
         self.row_keys: list[str] = []
+        # Track active shares: box_id -> (zeroconf, info, code, is_public, stop_event)
+        self.active_shares: dict[str, tuple] = {}
+        # Track boxes currently being set up for sharing (loading state)
+        self.pending_shares: set[str] = set()
+        # Discovered public boxes on LAN: code -> {name, ip, port}
+        self.discovered_public: dict[str, dict] = {}
+        # Connected remote boxes: code -> {code, ip, port, name}
+        self.connected_boxes: dict[str, dict] = {}
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -621,6 +775,9 @@ class ShadowBoxApp(App):
                 yield Static("Shared with Me", classes="title")
                 self.shared_boxes = ListView(id="shared")
                 yield self.shared_boxes
+                yield Static("Public Boxes (LAN)", classes="title")
+                self.public_boxes = ListView(id="public")
+                yield self.public_boxes
             with Vertical(id="main"):
                 yield Static("Files", classes="title")
                 self.table = DataTable(id="files")
@@ -635,6 +792,9 @@ class ShadowBoxApp(App):
         self.table.add_columns("Name", "Size", "Tags", "Status", "Modified")
         self.refresh_boxes()
         self.refresh_files()
+        # Discover public boxes immediately, then every 10 seconds
+        self._discover_public_boxes()
+        self.set_interval(10.0, self._discover_public_boxes)
 
     def refresh_boxes(self) -> None:
         assert self.boxes is not None
@@ -649,15 +809,32 @@ class ShadowBoxApp(App):
             return
 
         for box in user_boxes:
-            item = ListItem(Static(box.box_name))
+            # Show indicator based on share status
+            if box.box_id in self.pending_shares:
+                indicator = r"\[...] "  # Loading/pending
+            elif box.box_id in self.active_shares:
+                _, _, code, is_public, _ = self.active_shares[box.box_id]
+                indicator = r"\[P] " if is_public else f"\\[S:{code}] "
+            else:
+                indicator = ""
+            item = ListItem(Static(f"{indicator}{box.box_name}"))
             item.data = box
             self.boxes.append(item)
+        self.boxes.refresh()
 
         if self.shared_boxes is not None:
+            # Local shared boxes (from database)
             for box in shared_boxes:
                 item = ListItem(Static(f"{box.box_name} (shared)"))
                 item.data = box
                 self.shared_boxes.append(item)
+            # Remote connected boxes (via mDNS code)
+            for code, info in self.connected_boxes.items():
+                display = f"{info['name']} @ {info['ip']}"
+                item = ListItem(Static(display))
+                item.data = {"type": "remote", **info}
+                self.shared_boxes.append(item)
+            self.shared_boxes.refresh()
 
         # Keep selection aligned with active box.
         for idx, item in enumerate(self.boxes.children):
@@ -715,16 +892,56 @@ class ShadowBoxApp(App):
         self.refresh_files()
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
-        box = getattr(event.item, "data", None)
-        if box:
-            self.ctx.active_box = box
-            self.refresh_files()
+        data = getattr(event.item, "data", None)
+        if not data:
+            return
+        # Remote/public box - show its files via network
+        if isinstance(data, dict) and data.get("type") in ("remote", "public"):
+            self._show_remote_box_files(data)
+            return
+        # Local box
+        self.ctx.active_box = data
+        self.refresh_files()
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
-        box = getattr(event.item, "data", None)
-        if box and box != self.ctx.active_box:
-            self.ctx.active_box = box
+        data = getattr(event.item, "data", None)
+        if not data:
+            return
+        # Skip remote/public boxes on highlight (only select triggers fetch)
+        if isinstance(data, dict) and data.get("type") in ("remote", "public"):
+            return
+        # Local box
+        if data != self.ctx.active_box:
+            self.ctx.active_box = data
             self.refresh_files()
+
+    def _show_remote_box_files(self, remote_info: dict) -> None:
+        """Fetch and display files from a remote connected box (non-blocking)."""
+        ip = remote_info["ip"]
+        port = remote_info["port"]
+        code = remote_info["code"]
+        self._set_status(f"Fetching files from {code}...")
+        self.run_worker(
+            lambda: self._fetch_remote_files_worker(ip, port, code),
+            name="fetch_remote_files_worker",
+            exclusive=True,
+            thread=True,
+        )
+
+    def _fetch_remote_files_worker(self, ip: str, port: int, code: str) -> dict:
+        """Worker that fetches remote files (runs in thread)."""
+        try:
+            res = connect_and_request(ip, port, "LIST", timeout=5)
+            files_text = res.get("text", "").strip() if isinstance(res, dict) else str(res)
+            return {
+                "success": True,
+                "code": code,
+                "ip": ip,
+                "port": port,
+                "files_preview": files_text[:500] if files_text else "(empty)",
+            }
+        except Exception as exc:
+            return {"success": False, "code": code, "error": str(exc)}
 
     def _set_status(self, message: str) -> None:
         if self.status:
@@ -821,43 +1038,28 @@ class ShadowBoxApp(App):
             self._set_status(f"Delete failed: {exc}")
 
     def action_search(self) -> None:
-        self.push_screen(SearchModal(), self._handle_search)
+        self.push_screen(LiveSearchScreen(self.ctx), self._handle_live_search)
 
-    def _handle_search(self, result: Optional["SearchResult"]):
+    def _handle_live_search(self, result: Optional["LiveSearchResult"]) -> None:
         if not result:
             return
+        # Switch to the selected box
         try:
-            hits = search_fts(
-                self.ctx.db,
-                result.query,
-                user_id=self.ctx.user.user_id if result.scope_all is False else None,
-                limit=200,
-            )
-        except Exception as exc:  # pragma: no cover - UI-only
-            self._set_status(f"Search failed: {exc}")
-            return
-
-        self.table.clear(columns=False)
-        self.row_keys = []
-        for f in hits:
-            tags = ", ".join(f.tags) if f.tags else "--"
-            status = f.status.value if hasattr(f.status, "value") else str(f.status)
-            modified = (
-                f.modified_at.isoformat(timespec="seconds")
-                if isinstance(f.modified_at, datetime)
-                else str(f.modified_at)
-            )
-            self.table.add_row(
-                f"{f.filename} ({f.box_id[:6]})",
-                _human_size(f.size),
-                tags,
-                status,
-                modified,
-                key=f.file_id,
-            )
-            self.row_keys.append(f.file_id)
-
-        self._set_status(f"Search: {len(hits)} result(s)")
+            all_boxes = self.ctx.fm.list_user_boxes(self.ctx.user.user_id)
+            all_boxes += self.ctx.fm.list_shared_boxes(self.ctx.user.user_id)
+            target_box = next((b for b in all_boxes if b.box_id == result.box_id), None)
+            if target_box:
+                self.ctx.active_box = target_box
+                self.refresh_boxes()
+                self.refresh_files()
+                # Find and select the file in the table
+                for idx, fid in enumerate(self.row_keys):
+                    if fid == result.file_id:
+                        self.table.move_cursor(row=idx)
+                        break
+                self._set_status(f"Jumped to {target_box.box_name}")
+        except Exception as exc:
+            self._set_status(f"Jump failed: {exc}")
 
     def action_filter_by_tag(self):
         """
@@ -977,55 +1179,156 @@ class ShadowBoxApp(App):
         )
         self.push_screen(BoxInfoModal(self.ctx.active_box, info))
 
-    # Sharing
+    # Sharing via mDNS
     def action_share_box(self) -> None:
         if not self.ctx.active_box:
             return
         if self.ctx.active_box.user_id != self.ctx.user.user_id:
             self._set_status("Only owners can share boxes")
             return
-        self.push_screen(ShareBoxModal(), self._handle_share_box)
+        # Check if already sharing or pending
+        if self.ctx.active_box.box_id in self.active_shares:
+            self._stop_sharing(self.ctx.active_box.box_id)
+            return
+        if self.ctx.active_box.box_id in self.pending_shares:
+            self.notify("Share already in progress", severity="warning")
+            return
+        self.push_screen(
+            ShareBoxModal(self.ctx.active_box.box_name),
+            self._handle_share_box
+        )
 
     def _handle_share_box(self, result: Optional["ShareBoxResult"]) -> None:
         if not result:
             return
-        try:
-            self.ctx.fm.share_box(
-                box_id=self.ctx.active_box.box_id,
-                shared_by_user_id=self.ctx.user.user_id,
-                shared_with_user_id=result.user_id,
-                permission_level=result.permission,
-                expires_at=result.expires_at,
-            )
-            self._set_status("Box shared")
-        except Exception as exc:
-            self._set_status(f"Share failed: {exc}")
+        # Mark as pending and refresh UI immediately
+        box_id = self.ctx.active_box.box_id
+        box_name = self.ctx.active_box.box_name
+        username = self.ctx.user.username
+        self.pending_shares.add(box_id)
+        self.refresh_boxes()
 
-    def action_unshare_box(self) -> None:
-        if not self.ctx.active_box:
-            return
-        if self.ctx.active_box.user_id != self.ctx.user.user_id:
-            self._set_status("Only owners can unshare boxes")
-            return
-        self.push_screen(
-            UnshareModal(self.ctx.active_box.box_id, self.ctx.fm.box_share_model),
-            self._handle_unshare,
+        # Run the blocking mDNS work in a background thread
+        self.run_worker(
+            lambda: self._do_share_worker(box_id, box_name, result, username),
+            name="share_worker",
+            exclusive=True,
+            thread=True,
         )
 
-    def _handle_unshare(self, result: Optional[str]) -> None:
+    def _do_share_worker(self, box_id: str, box_name: str, result: "ShareBoxResult", username: str) -> dict:
+        """Worker that does the actual server startup and mDNS registration (runs in thread)."""
+        try:
+            # Generate 4-letter code for private, empty for public (uses base service type)
+            if result.is_public:
+                code = ""  # Empty = base _shadowbox._tcp.local. (one public box per user)
+            else:
+                code = give_code()
+
+            # Build service type with code embedded
+            service_type = f"_shadowbox{code}._tcp.local."
+
+            # Create server environment using the TUI's database
+            db_path = str(self.ctx.fm.db.db_path)
+            storage_root = str(self.ctx.fm.storage.root) if hasattr(self.ctx.fm.storage, 'root') else None
+            env = init_env(db_path=db_path, storage_root=storage_root, username=username)
+            select_box(env, box_name)
+            context = {"mode": "core", "env": env}
+
+            # Advertise the service
+            server_name = f"FileServer-{username}" if result.is_public else f"FileServer-{code}"
+            zeroconf, info = advertise_service(server_name, 9999, service_type)
+
+            # Create stop event for this server
+            server_stop_event = threading.Event()
+
+            # Start TCP server in a daemon thread
+            def run_server():
+                start_tcp_server(context, 9999)
+
+            server_thread = threading.Thread(target=run_server, daemon=True)
+            server_thread.start()
+
+            return {
+                "success": True,
+                "box_id": box_id,
+                "box_name": box_name,
+                "code": code,
+                "is_public": result.is_public,
+                "permission": result.permission,
+                "username": username,
+                "zeroconf": zeroconf,
+                "info": info,
+                "stop_event": server_stop_event,
+            }
+        except Exception as exc:
+            return {
+                "success": False,
+                "box_id": box_id,
+                "error": str(exc),
+            }
+
+    def _stop_sharing(self, box_id: str) -> None:
+        """Stop sharing a box and cleanup mDNS registration and TCP server."""
+        if box_id not in self.active_shares:
+            return
+        zeroconf, info, code, is_public, stop_event = self.active_shares[box_id]
+        try:
+            # Stop the TCP server
+            stop_server()
+            # Unregister mDNS service
+            zeroconf.unregister_service(info)
+            zeroconf.close()
+        except Exception:
+            pass
+        del self.active_shares[box_id]
+        self.refresh_boxes()
+        if is_public:
+            self.notify("Stopped public sharing")
+        else:
+            self.notify(f"Stopped sharing (code: {code})")
+
+    # Connect to remote box via 4-letter code
+    def action_connect(self) -> None:
+        self.push_screen(ConnectModal(), self._handle_connect)
+
+    def _handle_connect(self, result: Optional["ConnectResult"]) -> None:
         if not result:
             return
-        try:
-            self.ctx.fm.unshare_box(
-                self.ctx.active_box.box_id, self.ctx.user.user_id, result
-            )
-            self._set_status("Unshared")
-        except Exception as exc:
-            self._set_status(f"Unshare failed: {exc}")
+        code = result.code
+        self._set_status(f"Searching for {code}...")
+        # Run the blocking discovery in a background thread
+        self.run_worker(
+            lambda: self._do_connect_worker(code),
+            name="connect_worker",
+            exclusive=True,
+            thread=True,
+        )
 
-    # Network (read-only peer list)
-    def action_peer_list(self) -> None:
-        self.push_screen(PeerListModal())
+    def _do_connect_worker(self, code: str) -> dict:
+        """Worker that does the actual mDNS lookup and TCP connection (runs in thread)."""
+        try:
+            # Use backend API for service discovery
+            result = get_server_address(code, timeout=5.0)
+
+            if not result:
+                return {"success": False, "code": code, "error": "not_found"}
+
+            ip, port = result
+
+            # Try to connect and list files
+            res = connect_and_request(ip, port, "LIST")
+            files_text = res.get("text", "").strip() if isinstance(res, dict) else str(res)
+
+            return {
+                "success": True,
+                "code": code,
+                "ip": ip,
+                "port": port,
+                "files_preview": files_text[:500] if files_text else "(empty)",
+            }
+        except Exception as exc:
+            return {"success": False, "code": code, "error": str(exc)}
 
     # Edit file metadata (tags + description)
     def action_edit_file(self) -> None:
@@ -1116,6 +1419,171 @@ class ShadowBoxApp(App):
         cfg = load_config()
         cfg["last_box_id"] = box_id
         save_config(cfg)
+
+    def _cleanup_shares(self) -> None:
+        """Cleanup all active mDNS shares and TCP servers on exit."""
+        for box_id in list(self.active_shares.keys()):
+            zeroconf, info, _, _, _ = self.active_shares[box_id]
+            try:
+                stop_server()
+                zeroconf.unregister_service(info)
+                zeroconf.close()
+            except Exception:
+                pass
+        self.active_shares.clear()
+
+    def _discover_public_boxes(self) -> None:
+        """Background discovery for public boxes on LAN (non-blocking)."""
+        # Use run_worker to avoid blocking the UI
+        self.run_worker(
+            self._discover_public_boxes_worker,
+            name="_discover_public_boxes_worker",
+            exclusive=True,
+            thread=True,
+        )
+
+    def _discover_public_boxes_worker(self) -> dict[str, dict]:
+        """Worker that does the actual discovery (runs in thread)."""
+        import socket
+        import time
+        from zeroconf import Zeroconf, ServiceBrowser, ServiceListener
+
+        discovered: dict[str, dict] = {}
+        base_service_type = "_shadowbox._tcp.local."
+
+        try:
+            zc = Zeroconf()
+
+            class Listener(ServiceListener):
+                def add_service(self, zeroconf: Zeroconf, type_: str, name: str) -> None:
+                    # All services on base _shadowbox._tcp.local. are public
+                    info = zeroconf.get_service_info(type_, name, timeout=1000)
+                    if info and info.addresses:
+                        ip = None
+                        for packed in info.addresses:
+                            if len(packed) == 4:
+                                ip = socket.inet_ntoa(packed)
+                                break
+                        if ip:
+                            # Extract username from "FileServer-{username}._shadowbox._tcp.local."
+                            owner = name.split(".")[0].replace("FileServer-", "")
+                            discovered[name] = {"name": owner, "ip": ip, "port": info.port}
+
+                def remove_service(self, _zc: Zeroconf, _type: str, _name: str) -> None:
+                    pass
+
+                def update_service(self, _zc: Zeroconf, _type: str, _name: str) -> None:
+                    pass
+
+            listener = Listener()
+            browser = ServiceBrowser(zc, base_service_type, listener)
+            time.sleep(1.5)  # OK to block here - we're in a worker thread
+            browser.cancel()
+            zc.close()
+        except Exception:
+            pass
+        return discovered
+
+    def on_worker_state_changed(self, event) -> None:
+        """Handle worker completion to update UI."""
+        if not event.worker.is_finished:
+            return
+
+        worker_name = event.worker.name
+        result = event.worker.result
+
+        # Handle public box discovery completion
+        if worker_name == "_discover_public_boxes_worker":
+            if result:
+                self.discovered_public = result
+                self._refresh_public_boxes()
+
+        # Handle share worker completion
+        elif worker_name == "share_worker" and result:
+            if result.get("success"):
+                box_id = result["box_id"]
+                self.pending_shares.discard(box_id)
+                self.active_shares[box_id] = (
+                    result["zeroconf"],
+                    result["info"],
+                    result["code"],
+                    result["is_public"],
+                    result["stop_event"],
+                )
+                self.refresh_boxes()
+
+                if result["is_public"]:
+                    self.notify("Box is now public on LAN", title="Shared")
+                else:
+                    self.push_screen(ShareCodeModal(
+                        code=result["code"],
+                        box_name=result["box_name"],
+                        permission=result["permission"],
+                        owner=result["username"],
+                    ))
+            else:
+                self.pending_shares.discard(result.get("box_id", ""))
+                self.refresh_boxes()
+                self.notify(f"Share failed: {result.get('error')}", title="Error", severity="error")
+
+        # Handle connect worker completion
+        elif worker_name == "connect_worker" and result:
+            if result.get("success"):
+                code = result["code"]
+                # Store the connection
+                self.connected_boxes[code] = {
+                    "code": code,
+                    "ip": result["ip"],
+                    "port": result["port"],
+                    "name": f"Remote ({code})",
+                }
+                self._set_status(f"Connected to {code}")
+                self.refresh_boxes()
+                self.push_screen(ConnectSuccessModal(
+                    code=code,
+                    ip=result["ip"],
+                    port=result["port"],
+                    files_preview=result["files_preview"],
+                ))
+            else:
+                error = result.get("error", "unknown")
+                if error == "not_found":
+                    self.notify(f"No share found with code: {result['code']}", title="Not Found", severity="warning")
+                elif error == "no_ip":
+                    self.notify("Could not resolve address", title="Error", severity="error")
+                else:
+                    self.notify(f"Connection failed: {error}", title="Error", severity="error")
+                self._set_status("Connection failed")
+
+        # Handle fetch remote files worker completion
+        elif worker_name == "fetch_remote_files_worker" and result:
+            if result.get("success"):
+                self._set_status(f"Connected to {result['code']}")
+                self.push_screen(ConnectSuccessModal(
+                    code=result["code"],
+                    ip=result["ip"],
+                    port=result["port"],
+                    files_preview=result["files_preview"],
+                ))
+            else:
+                self._set_status(f"Failed to fetch files: {result.get('error')}")
+
+    def _refresh_public_boxes(self) -> None:
+        """Update the public boxes list in the sidebar."""
+        if self.public_boxes is None:
+            return
+        self.public_boxes.clear()
+        for code, info in self.discovered_public.items():
+            display = f"{info['name']} @ {info['ip']}"
+            item = ListItem(Static(display))
+            item.data = {"type": "public", "code": code, **info}
+            self.public_boxes.append(item)
+        self.public_boxes.refresh()
+
+    def action_quit(self) -> None:
+        """Override quit to cleanup shares first."""
+        self._cleanup_shares()
+        self.exit()
 
 
 if __name__ == "__main__":  # pragma: no cover
