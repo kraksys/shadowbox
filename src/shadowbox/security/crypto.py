@@ -21,7 +21,7 @@ from typing import BinaryIO
 from pathlib import Path
 import tempfile
 import shutil
-from core.hashing import calculate_sha256
+from shadowbox.core.hashing import calculate_sha256
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes

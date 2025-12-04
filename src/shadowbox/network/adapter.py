@@ -28,16 +28,19 @@ def init_env(db_path="./shadowbox.db", storage_root=None, username=None):
     # Ensure default box for this user
     bm = BoxModel(db)
     default_box = None
+    box_id = None
     for box in bm.list_by_user(user_id) or []:
         if box.get("box_name") == "default":
             default_box = box
             break
-    if not default_box:
-        default = Box(user_id=user_id, box_name="default", description="Default box")
-        bm.create(default)
-        default_box = bm.get(default.box_id)
+    # if not default_box:
+    #     default = Box(user_id=user_id, box_name="default", description="Default box")
+    #     bm.create(default)
+    #     default_box = bm.get(default.box_id)
+    if default_box:
+        box_id = default_box["box_id"]
 
-    return {"db": db, "storage": storage, "username": uname, "user_id": user_id, "box_id": default_box["box_id"]}
+    return {"db": db, "storage": storage, "username": uname, "user_id": user_id, "box_id": box_id}
 
 
 def check_permission(env, box_id, required_permission="read") -> bool:
@@ -140,7 +143,7 @@ def format_list(env):
         raise AccessDeniedError("You do not have read permission for this box.")
     fm = FileModel(env["db"])
     items = fm.list_by_box(env["box_id"], include_deleted=False, limit=1000, offset=0)
-    return "\n".join(m.filename for m in items)
+    return ",\n".join(f"{m.file_id}: {{Filename: {m.filename}, Size: {m.size}, Tags: {m.tags}, Status: {m.status}}}" for m in items)
 
 
 def open_for_get(env, filename):
