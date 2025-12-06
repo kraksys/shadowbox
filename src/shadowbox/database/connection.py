@@ -121,10 +121,26 @@ class DatabaseConnection:
     def get_version(self):
         """Return current schema version number."""
         try:
-            result = self.fetch_one("SELECT MAX(version) as version FROM schema_version")
+            result = self.fetch_one(
+                "SELECT MAX(version) as version FROM schema_version"
+            )
             return result["version"] if result and result["version"] else 0
         except sqlite3.Error:
             return 0
+
+    def backup(self, dest_path):
+        """Create a backup of the current state of the SQLite DB"""
+        from pathlib import Path
+
+        dest = Path(dest_path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+
+        source_conn = self._get_connection()
+        dest_conn = sqlite3.connect(dest.as_posix())
+        try:
+            source_conn.backup(dest_conn)
+        finally:
+            dest_conn.close()
 
     def close(self):
         """Close the thread-local connection if open."""
