@@ -2,7 +2,13 @@ from pathlib import Path
 import uuid
 import getpass
 from shadowbox.database.connection import DatabaseConnection
-from shadowbox.database.models import UserModel, FileModel, BoxModel, row_to_metadata, BoxShareModel, row_to_metadata
+from shadowbox.database.models import (
+    UserModel,
+    FileModel,
+    BoxModel,
+    BoxShareModel,
+    row_to_metadata,
+)
 from shadowbox.core.models import FileMetadata, Box, BoxShare
 from shadowbox.core.storage import Storage
 from shadowbox.core.exceptions import BoxNotFoundError, UserNotFoundError, AccessDeniedError
@@ -80,9 +86,8 @@ def find_by_filename(env, filename):
     tags = [
         r["tag_name"]
         for r in db.fetch_all(
-            "SELECT t.tag_name FROM tags t "
-            "JOIN file_tags ft ON ft.tag_id = t.tag_id "
-            "WHERE ft.file_id = ?",
+            "SELECT tag_name FROM tags "
+            "WHERE entity_type = 'file' AND entity_id = ?",
             (row["file_id"],),
         )
     ]
