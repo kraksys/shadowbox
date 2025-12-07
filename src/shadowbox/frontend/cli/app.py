@@ -30,7 +30,7 @@ from textual.screen import ModalScreen
 
 from shadowbox.core.models import FileMetadata
 from shadowbox.frontend.cli.context import AppContext, build_context
-from shadowbox.database.search import fuzzy_search_fts
+from shadowbox.database.search import fuzzy_search_fts, search_by_tag
 from shadowbox.network.client import get_server_address, connect_and_request
 from shadowbox.network.server import give_code, start_tcp_server, stop_server, advertise_service
 from shadowbox.network.adapter import init_env, select_box
@@ -139,6 +139,53 @@ class DownloadModal(ModalScreen[Optional[DownloadResult]]):
         elif event.key == "enter":
             dest = self.dest_input.value.strip()
             self.dismiss(DownloadResult(dest=dest))
+
+
+class InitialSetupResult:
+    """Initial setup result - first box name and optional master key."""
+
+    def __init__(self, box_name: str, master_key: str | None):
+        self.box_name = box_name
+        self.master_key = master_key
+
+
+class InitialSetupModal(ModalScreen[Optional[InitialSetupResult]]):
+    """First-run setup modal to configure initial box and master key."""
+
+    def compose(self) -> ComposeResult:  # pragma: no cover - UI only
+        with Vertical(classes="dialog"):
+            yield Static("Initial Setup", classes="title")
+            yield Label("Name for your first box")
+            self.box_input = Input(placeholder="wikibooks-en or default", value="default")
+            yield self.box_input
+            yield Label("Master key (optional - blank disables encryption)")
+            self.master_input = Input(placeholder="••••••")
+            yield self.master_input
+            with Horizontal():
+                yield Button("Skip", id="skip")
+                yield Button("Save (Enter)", id="ok", variant="primary")
+
+    def on_mount(self) -> None:  # pragma: no cover
+        self.set_focus(self.box_input)
+
+    def _submit(self) -> None:
+        box_name = (self.box_input.value or "").strip() or "default"
+        master = (self.master_input.value or "").strip()
+        if not master:
+            master = None
+        self.dismiss(InitialSetupResult(box_name=box_name, master_key=master))
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:  # pragma: no cover
+        if event.button.id == "skip":
+            self.dismiss(None)
+        else:
+            self._submit()
+
+    def on_key(self, event) -> None:  # pragma: no cover
+        if event.key == "escape":
+            self.dismiss(None)
+        elif event.key == "enter":
+            self._submit()
 
 
 class LiveSearchResult:
@@ -297,7 +344,7 @@ class FileVersionsModal(ModalScreen):
             for row in self.versions:
                 number = row.get("version_number", row.get("version", "?"))
                 size = row.get("size", 0)
-                created_at = row.get("crated_at", "")
+                created_at = row.get("created_at", "")
                 label = "v%s . %s bytes . %s" % (number, size, created_at)
                 item = ListItem(Static(label))
                 self.list_view.append(item)
@@ -393,6 +440,12 @@ class NewBoxResult:
 
 
 class NewBoxModal(ModalScreen[Optional[NewBoxResult]]):
+    def __init__(self, encrypt_ready: bool = True):
+        super().__init__()
+        # When False, the checkbox is disabled to reflect that the backend
+        # encryption key has not been configured (FileManager.encryption_enabled).
+        self.encrypt_ready = encrypt_ready
+
     def compose(self) -> ComposeResult:  # pragma: no cover
         with Vertical(classes="dialog"):
             yield Static("New Box", classes="title")
@@ -400,7 +453,12 @@ class NewBoxModal(ModalScreen[Optional[NewBoxResult]]):
             yield self.name_input
             self.desc_input = Input(placeholder="description (optional)")
             yield self.desc_input
-            self.encrypt_box = Checkbox("Encrypt box (if backend ready)")
+            label = (
+                "Encrypt box"
+                if self.encrypt_ready
+                else "Encryption unavailable (master key not set)"
+            )
+            self.encrypt_box = Checkbox(label, disabled=not self.encrypt_ready)
             yield self.encrypt_box
             with Horizontal():
                 yield Button("Cancel (Esc)", id="cancel")
@@ -732,6 +790,8 @@ class ShadowBoxApp(App):
         ("q", "quit", "Quit"),
         ("r", "refresh", "Refresh"),
         ("a", "add_file", "Add"),
+        # Use 'g' as a reliable key to download the currently selected file.
+        ("g", "download", "Download"),
         ("enter", "download", "Download"),
         ("d", "delete_file", "Delete"),
         ("/", "search", "Search"),
@@ -796,6 +856,92 @@ class ShadowBoxApp(App):
         self._discover_public_boxes()
         self.set_interval(10.0, self._discover_public_boxes)
 
+        # First-run setup: prompt for initial box and optional master key.
+        if getattr(self.ctx, "first_run", False):
+            self.push_screen(
+                InitialSetupModal(),
+                self._handle_initial_setup,
+            )
+
+    def _handle_initial_setup(
+        self, result: Optional["InitialSetupResult"]
+    ) -> None:
+        """
+        Handle the first-run setup flow:
+
+        - Optionally configure encryption via a master key
+        - Create the initial box (encrypted or plain)
+        - Activate it and refresh the UI
+        """
+        # Ensure we don't re-run the first-run flow in this session.
+        self.ctx.first_run = False
+
+        box = None
+
+        # If the user skipped the dialog, create a default unencrypted box.
+        if not result:
+            try:
+                box = self.ctx.fm.create_box(
+                    user_id=self.ctx.user.user_id,
+                    box_name="default",
+                    description="Default box",
+                )
+            except Exception as exc:
+                self._set_status(f"Initial setup skipped: {exc}")
+                return
+        else:
+            # Configure encryption if a master key was provided.
+            if result.master_key:
+                try:
+                    self.ctx.fm.setup_encryption(result.master_key)
+                except Exception as exc:
+                    # Surface encryption failures prominently but allow plain usage.
+                    self.push_screen(
+                        ErrorModal(
+                            "Encryption Setup Failed",
+                            f"Could not configure master key: {exc}",
+                        )
+                    )
+                    self._set_status(
+                        "Encryption setup failed; continuing without encryption"
+                    )
+
+            box_name = result.box_name or "default"
+            try:
+                box = self.ctx.fm.create_box(
+                    user_id=self.ctx.user.user_id,
+                    box_name=box_name,
+                    description=f"Initial box '{box_name}'",
+                    enable_encryption=bool(
+                        result.master_key and self.ctx.fm.encryption_enabled
+                    ),
+                )
+            except Exception as exc:
+                self.push_screen(
+                    ErrorModal(
+                        "Initial Box Error",
+                        f"Could not create box '{box_name}': {exc}",
+                    )
+                )
+                self._set_status("Initial setup failed")
+                return
+
+        if not box:
+            self._set_status("Initial setup did not create a box")
+            return
+
+        # Finalize: set active box, remember it, and refresh UI.
+        self.ctx.active_box = box
+        try:
+            self._persist_last_box(box.box_id)
+        except Exception:
+            # Persisting last box is best-effort; failures should not block usage.
+            pass
+
+        self.refresh_boxes()
+        self.refresh_files()
+        self._set_status(f"Ready - active box: {box.box_name}")
+
     def refresh_boxes(self) -> None:
         assert self.boxes is not None
         self.boxes.clear()
@@ -837,22 +983,23 @@ class ShadowBoxApp(App):
             self.shared_boxes.refresh()
 
         # Keep selection aligned with active box.
-        for idx, item in enumerate(self.boxes.children):
-            if (
-                getattr(item, "data", None)
-                and item.data.box_id == self.ctx.active_box.box_id
-            ):
-                self.boxes.index = idx
-                break
-        if self.shared_boxes and self.ctx.active_box:
-            if self.ctx.active_box.user_id != self.ctx.user.user_id:
-                for idx, item in enumerate(self.shared_boxes.children):
-                    if (
-                        getattr(item, "data", None)
-                        and item.data.box_id == self.ctx.active_box.box_id
-                    ):
-                        self.shared_boxes.index = idx
-                        break
+        if self.ctx.active_box:
+            for idx, item in enumerate(self.boxes.children):
+                if (
+                    getattr(item, "data", None)
+                    and item.data.box_id == self.ctx.active_box.box_id
+                ):
+                    self.boxes.index = idx
+                    break
+            if self.shared_boxes:
+                if self.ctx.active_box.user_id != self.ctx.user.user_id:
+                    for idx, item in enumerate(self.shared_boxes.children):
+                        if (
+                            getattr(item, "data", None)
+                            and item.data.box_id == self.ctx.active_box.box_id
+                        ):
+                            self.shared_boxes.index = idx
+                            break
 
     def refresh_files(self) -> None:
         assert self.table is not None
@@ -957,13 +1104,17 @@ class ShadowBoxApp(App):
             )
         used = _human_size(self.ctx.user.used_bytes)
         total = _human_size(self.ctx.user.quota_bytes)
+        box_name = self.ctx.active_box.box_name if self.ctx.active_box else "(none)"
         self._set_status(
-            f"User: {self.ctx.user.username} • Box: {self.ctx.active_box.box_name} • Files: {self.table.row_count} • Quota: {used}/{total}"
+            f"User: {self.ctx.user.username} • Box: {box_name} • Files: {self.table.row_count} • Quota: {used}/{total}"
         )
 
     # === Actions ===
 
     def action_add_file(self) -> None:
+        if not self.ctx.active_box:
+            self._set_status("Create a box first")
+            return
         self._set_status("Adding file...")
         self.push_screen(
             AddFileModal(encrypt_ready=self.ctx.fm.encryption_enabled),
@@ -1121,7 +1272,12 @@ class ShadowBoxApp(App):
 
     # Box CRUD
     def action_new_box(self) -> None:
-        self.push_screen(NewBoxModal(), self._handle_new_box)
+        # Only allow the "encrypt" toggle when the backend encryption key
+        # has been configured via FileManager (master password set).
+        self.push_screen(
+            NewBoxModal(encrypt_ready=self.ctx.fm.encryption_enabled),
+            self._handle_new_box,
+        )
 
     def _handle_new_box(self, result: Optional["NewBoxResult"]):
         if not result:
@@ -1384,7 +1540,7 @@ class ShadowBoxApp(App):
             lambda version_id: self._handle_restore_version(file_id, version_id),
         )
 
-    def handle_restore_version(self, file_id, version_id):
+    def _handle_restore_version(self, file_id, version_id):
         """Apply the chosen (historical) version if exists, and refresh the table"""
         if not version_id:
             return
