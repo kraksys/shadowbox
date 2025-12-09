@@ -31,9 +31,9 @@ from textual.screen import ModalScreen
 from shadowbox.core.models import FileMetadata
 from shadowbox.frontend.cli.context import AppContext, build_context
 from shadowbox.database.search import fuzzy_search_fts, search_by_tag
-from shadowbox.network.client import get_server_address, connect_and_request
+from shadowbox.network.client import get_server_address, connect_and_request, cmd_put, cmd_delete
 from shadowbox.network.server import give_code, start_tcp_server, stop_server, advertise_service
-from shadowbox.network.adapter import init_env, select_box
+from shadowbox.network.adapter import init_env, select_box, share_box
 
 
 def _human_size(num: int) -> str:
@@ -569,10 +569,10 @@ class ErrorModal(ModalScreen[None]):
 
 
 class ShareBoxResult:
-    """Result from the share modal - contains share type and permission."""
-    def __init__(self, is_public: bool, permission: str):
+    """Result from the share modal - contains share type and write users."""
+    def __init__(self, is_public: bool, write_usernames: list[str]):
         self.is_public = is_public
-        self.permission = permission
+        self.write_usernames = write_usernames  # List of usernames with write access
 
 
 class ShareBoxModal(ModalScreen[Optional[ShareBoxResult]]):
@@ -585,11 +585,11 @@ class ShareBoxModal(ModalScreen[Optional[ShareBoxResult]]):
         with Vertical(classes="dialog"):
             yield Static(f"Share Box: {self.box_name}", classes="title")
             yield Label("Share type:")
-            self.public_checkbox = Checkbox("Public (visible to everyone on LAN)")
+            self.public_checkbox = Checkbox("Public (visible to everyone on LAN, read access)")
             yield self.public_checkbox
-            yield Label("Permission level:")
-            self.perm_input = Input(placeholder="read or write", value="read")
-            yield self.perm_input
+            yield Label("Users with WRITE permission (comma-separated):")
+            self.write_users_input = Input(placeholder="alice, bob, charlie")
+            yield self.write_users_input
             with Horizontal():
                 yield Button("Cancel (Esc)", id="cancel")
                 yield Button("Share (Enter)", id="ok", variant="primary")
@@ -598,12 +598,12 @@ class ShareBoxModal(ModalScreen[Optional[ShareBoxResult]]):
         self.set_focus(self.public_checkbox)
 
     def _submit(self) -> None:
-        perm = self.perm_input.value.strip() or "read"
-        if perm not in ("read", "write"):
-            perm = "read"
+        # Parse comma-separated usernames
+        raw = self.write_users_input.value.strip()
+        write_usernames = [u.strip() for u in raw.split(",") if u.strip()]
         self.dismiss(ShareBoxResult(
             is_public=self.public_checkbox.value,
-            permission=perm
+            write_usernames=write_usernames
         ))
 
     def on_button_pressed(self, event: Button.Pressed) -> None:  # pragma: no cover
@@ -621,24 +621,34 @@ class ShareBoxModal(ModalScreen[Optional[ShareBoxResult]]):
 
 class ShareCodeModal(ModalScreen[None]):
     """Modal displaying the generated share code with copy functionality."""
-    def __init__(self, code: str, box_name: str, permission: str, owner: str):
+    def __init__(self, code: str, box_name: str, write_usernames: list[str], owner: str, is_public: bool = False):
         super().__init__()
         self.code = code
         self.box_name = box_name
-        self.permission = permission
+        self.write_usernames = write_usernames
         self.owner = owner
+        self.is_public = is_public
 
     def compose(self) -> ComposeResult:  # pragma: no cover
         with Vertical(classes="dialog"):
             yield Static("Box Shared!", classes="title")
             yield Static(f"Box: {self.box_name}")
-            yield Static(f"Permission: {self.permission}")
             yield Static(f"Owner: {self.owner}")
+            if self.is_public:
+                yield Static("Access: Public (everyone can read)")
+            if self.write_usernames:
+                yield Static(f"Write access: {', '.join(self.write_usernames)}")
+            else:
+                yield Static("Write access: None (read-only)")
             yield Static("")
-            yield Static(f"Share Code: {self.code}", classes="title")
+            if self.code:
+                yield Static(f"Share Code: {self.code}", classes="title")
+            else:
+                yield Static("Public share (no code needed)", classes="title")
             yield Static("")
             with Horizontal():
-                yield Button("Copy Code", id="copy")
+                if self.code:
+                    yield Button("Copy Code", id="copy")
                 yield Button("Done", id="done", variant="primary")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:  # pragma: no cover
@@ -824,6 +834,12 @@ class ShadowBoxApp(App):
         self.discovered_public: dict[str, dict] = {}
         # Connected remote boxes: code -> {code, ip, port, name}
         self.connected_boxes: dict[str, dict] = {}
+        # Currently active remote box (if any): {type, code, ip, port, name}
+        self.active_remote_box: dict | None = None
+        # Whether we're currently viewing a remote box's files
+        self.viewing_remote: bool = False
+        # Permission level for the currently active box ("read", "write", "admin", or "owner")
+        self.active_box_permission: str = "owner"
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -971,7 +987,9 @@ class ShadowBoxApp(App):
         if self.shared_boxes is not None:
             # Local shared boxes (from database)
             for box in shared_boxes:
-                item = ListItem(Static(f"{box.box_name} (shared)"))
+                perm = self._get_box_permission(box)
+                perm_indicator = {"read": "R", "write": "W", "admin": "A"}.get(perm, "R")
+                item = ListItem(Static(f"[{perm_indicator}] {box.box_name}"))
                 item.data = box
                 self.shared_boxes.append(item)
             # Remote connected boxes (via mDNS code)
@@ -1006,10 +1024,14 @@ class ShadowBoxApp(App):
         # Clear existing rows but keep column definitions intact.
         self.table.clear(columns=False)
         self.row_keys = []
+        self.viewing_remote = False
 
         if not self.ctx.active_box:
             self._set_status("No active box")
             return
+
+        # Update permission level for active box
+        self.active_box_permission = self._get_box_permission(self.ctx.active_box)
 
         try:
             files: Iterable[FileMetadata] = self.ctx.fm.list_box_files(
@@ -1044,38 +1066,52 @@ class ShadowBoxApp(App):
             return
         # Remote/public box - show its files via network
         if isinstance(data, dict) and data.get("type") in ("remote", "public"):
-            self._show_remote_box_files(data)
+            self.active_remote_box = data
+            # Remote boxes use permission from connection info, default to read
+            self.active_box_permission = data.get("permission", "read")
+            self._show_remote_box_files(data, show_modal=False)
             return
-        # Local box
+        # Local box - clear remote selection
+        self.active_remote_box = None
         self.ctx.active_box = data
+        self.active_box_permission = self._get_box_permission(data)
         self.refresh_files()
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         data = getattr(event.item, "data", None)
         if not data:
             return
-        # Skip remote/public boxes on highlight (only select triggers fetch)
+        # Remote/public boxes - track selection but don't fetch on highlight
         if isinstance(data, dict) and data.get("type") in ("remote", "public"):
+            self.active_remote_box = data
+            self.active_box_permission = data.get("permission", "read")
             return
-        # Local box
+        # Local box - clear remote selection
+        self.active_remote_box = None
         if data != self.ctx.active_box:
             self.ctx.active_box = data
+            self.active_box_permission = self._get_box_permission(data)
             self.refresh_files()
 
-    def _show_remote_box_files(self, remote_info: dict) -> None:
-        """Fetch and display files from a remote connected box (non-blocking)."""
+    def _show_remote_box_files(self, remote_info: dict, show_modal: bool = False) -> None:
+        """Fetch and display files from a remote connected box (non-blocking).
+
+        Args:
+            remote_info: Dict with code, ip, port, name
+            show_modal: If True, show ConnectSuccessModal after fetching (first connect or box info)
+        """
         ip = remote_info["ip"]
         port = remote_info["port"]
         code = remote_info["code"]
         self._set_status(f"Fetching files from {code}...")
         self.run_worker(
-            lambda: self._fetch_remote_files_worker(ip, port, code),
+            lambda: self._fetch_remote_files_worker(ip, port, code, show_modal),
             name="fetch_remote_files_worker",
             exclusive=True,
             thread=True,
         )
 
-    def _fetch_remote_files_worker(self, ip: str, port: int, code: str) -> dict:
+    def _fetch_remote_files_worker(self, ip: str, port: int, code: str, show_modal: bool = False) -> dict:
         """Worker that fetches remote files (runs in thread)."""
         try:
             res = connect_and_request(ip, port, "LIST", timeout=5)
@@ -1085,14 +1121,178 @@ class ShadowBoxApp(App):
                 "code": code,
                 "ip": ip,
                 "port": port,
+                "files_text": files_text,
                 "files_preview": files_text[:500] if files_text else "(empty)",
+                "show_modal": show_modal,
             }
         except Exception as exc:
             return {"success": False, "code": code, "error": str(exc)}
 
+    def _parse_remote_files(self, files_text: str) -> list[dict]:
+        """Parse remote file list from backend format.
+
+        New format: file_id: {Filename: name, Size: 123, Tags: ['tag1'], Status: active}
+        Returns list of dicts with keys: file_id, filename, size, tags, status
+        """
+        import re
+        files: list[dict] = []
+        if not files_text:
+            return files
+
+        # New format uses ",\n" as separator, old format uses just "\n"
+        # Try to detect format: if we see "{" it's likely new format
+        if "{" in files_text:
+            entries = files_text.split(",\n")
+        else:
+            entries = files_text.split("\n")
+
+        for entry in entries:
+            entry = entry.strip()
+            if not entry:
+                continue
+
+            # Try to parse new format: "file_id: {Filename: ..., Size: ..., Tags: ..., Status: ...}"
+            match = re.match(r'^([^:]+):\s*\{(.+)\}$', entry)
+            if match:
+                file_id = match.group(1).strip()
+                props_str = match.group(2)
+
+                # Extract properties from the curly braces content
+                filename = ""
+                size = 0
+                tags: list[str] = []
+                status = "active"
+                modified_at = ""
+
+                # Parse Filename
+                fn_match = re.search(r'Filename:\s*([^,]+?)(?:,|$)', props_str)
+                if fn_match:
+                    filename = fn_match.group(1).strip()
+
+                # Parse Size
+                size_match = re.search(r'Size:\s*(\d+)', props_str)
+                if size_match:
+                    size = int(size_match.group(1))
+
+                # Parse Tags - format is Tags: ['tag1', 'tag2'] or Tags: []
+                tags_match = re.search(r"Tags:\s*\[([^\]]*)\]", props_str)
+                if tags_match:
+                    tags_content = tags_match.group(1).strip()
+                    if tags_content:
+                        # Extract quoted strings
+                        tags = re.findall(r"'([^']*)'", tags_content)
+
+                # Parse Status
+                status_match = re.search(r'Status:\s*(\w+)', props_str)
+                if status_match:
+                    status = status_match.group(1).strip()
+
+                # Parse Modified - format is Modified: 2024-01-15T10:30:00 or datetime object str
+                modified_match = re.search(r'Modified:\s*([^,}]+)', props_str)
+                if modified_match:
+                    modified_at = modified_match.group(1).strip()
+
+                files.append({
+                    "file_id": file_id,
+                    "filename": filename,
+                    "size": size,
+                    "tags": tags,
+                    "status": status,
+                    "modified_at": modified_at,
+                })
+            else:
+                # Fallback: try old format "filename: size"
+                if ": " in entry:
+                    parts = entry.rsplit(": ", 1)
+                    if len(parts) == 2:
+                        filename = parts[0]
+                        try:
+                            size = int(parts[1])
+                            files.append({
+                                "file_id": filename,
+                                "filename": filename,
+                                "size": size,
+                                "tags": [],
+                                "status": "remote",
+                                "modified_at": "",
+                            })
+                        except ValueError:
+                            files.append({
+                                "file_id": entry,
+                                "filename": entry,
+                                "size": 0,
+                                "tags": [],
+                                "status": "remote",
+                                "modified_at": "",
+                            })
+                else:
+                    files.append({
+                        "file_id": entry,
+                        "filename": entry,
+                        "size": 0,
+                        "tags": [],
+                        "status": "remote",
+                        "modified_at": "",
+                    })
+        return files
+
+    def _populate_remote_files(self, files: list[dict]) -> None:
+        """Populate the table with remote file entries."""
+        if self.table is None:
+            return
+        self.table.clear(columns=False)
+        self.row_keys = []
+        self.viewing_remote = True
+
+        for f in files:
+            tags_str = ", ".join(f["tags"]) if f["tags"] else "--"
+            # Format modified_at - truncate datetime to just date+time if it's an ISO string
+            modified_str = f.get("modified_at", "")
+            if modified_str:
+                # Try to format nicely - truncate microseconds if present
+                if "." in modified_str:
+                    modified_str = modified_str.split(".")[0]
+                # Replace T with space for readability
+                modified_str = modified_str.replace("T", " ")
+            else:
+                modified_str = "--"
+            self.table.add_row(
+                f["filename"],
+                _human_size(f["size"]),
+                tags_str,
+                f["status"],
+                modified_str,
+                key=f["file_id"],
+            )
+            self.row_keys.append(f["file_id"])
+
+        self._set_status(f"Remote box: {len(files)} file(s)")
+
     def _set_status(self, message: str) -> None:
         if self.status:
             self.status.update(message)
+
+    def _get_box_permission(self, box) -> str:
+        """Get the current user's permission level for a box."""
+        if box.user_id == self.ctx.user.user_id:
+            return "owner"
+        # Check share permission from database
+        shares = self.ctx.fm.box_share_model.list_by_box(box.box_id)
+        for share in shares:
+            if share["shared_with_user_id"] == self.ctx.user.user_id:
+                return share["permission_level"]
+        return "read"  # Default fallback
+
+    def _has_write_permission(self) -> bool:
+        """Check if current user has write permission on active box.
+
+        For remote boxes, we always return True and let the server enforce
+        permissions - if the server denies the operation, we show the error.
+        """
+        # Remote boxes: let the server decide, don't block on frontend
+        if self.active_remote_box is not None:
+            return True
+        return self.active_box_permission in ("owner", "admin", "write")
 
     def _update_status(self) -> None:
         # pull fresh user quota for accuracy
@@ -1105,8 +1305,9 @@ class ShadowBoxApp(App):
         used = _human_size(self.ctx.user.used_bytes)
         total = _human_size(self.ctx.user.quota_bytes)
         box_name = self.ctx.active_box.box_name if self.ctx.active_box else "(none)"
+        perm_display = self.active_box_permission.upper()
         self._set_status(
-            f"User: {self.ctx.user.username} • Box: {box_name} • Files: {self.table.row_count} • Quota: {used}/{total}"
+            f"User: {self.ctx.user.username} • Box: {box_name} [{perm_display}] • Files: {self.table.row_count} • Quota: {used}/{total}"
         )
 
     # === Actions ===
@@ -1114,6 +1315,9 @@ class ShadowBoxApp(App):
     def action_add_file(self) -> None:
         if not self.ctx.active_box:
             self._set_status("Create a box first")
+            return
+        if not self._has_write_permission():
+            self._set_status(f"No write permission (current: {self.active_box_permission})")
             return
         self._set_status("Adding file...")
         self.push_screen(
@@ -1124,6 +1328,19 @@ class ShadowBoxApp(App):
     def _handle_add_file(self, result: Optional["AddFileResult"]) -> None:
         if not result:
             return
+        # Remote box: upload via network
+        if self.active_remote_box is not None:
+            ip = self.active_remote_box["ip"]
+            port = self.active_remote_box["port"]
+            self._set_status(f"Uploading to remote...")
+            self.run_worker(
+                lambda: self._remote_upload_worker(ip, port, result.path),
+                name="remote_upload_worker",
+                exclusive=True,
+                thread=True,
+            )
+            return
+        # Local box: use file manager
         try:
             self.ctx.fm.add_file(
                 user_id=self.ctx.user.user_id,
@@ -1151,9 +1368,11 @@ class ShadowBoxApp(App):
             self._set_status("Select a file first")
             return
         self._set_status("Downloading...")
-        self.push_screen(
-            DownloadModal(), lambda res: self._handle_download(res, file_id)
-        )
+        if self.viewing_remote:
+            # For remote files, file_id is actually the filename
+            self.push_screen(DownloadModal(), lambda res: self._handle_remote_download(res, file_id))
+        else:
+            self.push_screen(DownloadModal(), lambda res: self._handle_download(res, file_id))
 
     def _handle_download(
         self, result: Optional["DownloadResult"], file_id: str
@@ -1166,7 +1385,65 @@ class ShadowBoxApp(App):
         except Exception as exc:  # pragma: no cover - UI-only
             self._set_status(f"Download failed: {exc}")
 
+    def _handle_remote_download(self, result: Optional["DownloadResult"], filename: str) -> None:
+        if not result or not self.active_remote_box:
+            return
+        ip = self.active_remote_box["ip"]
+        port = self.active_remote_box["port"]
+        self._set_status(f"Downloading {filename} from remote...")
+        self.run_worker(
+            lambda: self._remote_download_worker(ip, port, filename, result.dest),
+            name="remote_download_worker",
+            exclusive=True,
+            thread=True,
+        )
+
+    def _remote_download_worker(self, ip: str, port: int, filename: str, dest_path: str) -> dict:
+        """Worker that downloads a file from a remote box."""
+        try:
+            res = connect_and_request(ip, port, f"GET {filename}", timeout=30)
+            if isinstance(res, dict) and res.get("status") == "ok":
+                data = res.get("data", b"")
+                with open(dest_path, "wb") as f:
+                    f.write(data if isinstance(data, bytes) else data.encode())
+                return {"success": True, "dest": dest_path, "filename": filename}
+            else:
+                error = res.get("error", "Unknown error") if isinstance(res, dict) else str(res)
+                return {"success": False, "error": error}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    def _remote_upload_worker(self, ip: str, port: int, local_path: str) -> dict:
+        """Worker that uploads a file to a remote box."""
+        try:
+            res = cmd_put(ip, port, local_path, timeout=60)
+            if isinstance(res, dict) and res.get("status") == "ok":
+                return {"success": True, "path": local_path}
+            else:
+                error = res.get("error", res.get("reply", "Unknown error")) if isinstance(res, dict) else str(res)
+                return {"success": False, "error": error}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    def _remote_delete_worker(self, ip: str, port: int, filename: str) -> dict:
+        """Worker that deletes a file from a remote box."""
+        try:
+            res = cmd_delete(ip, port, filename, timeout=30)
+            if isinstance(res, dict) and res.get("status") == "ok":
+                text = res.get("text", "")
+                if "ERROR" in text.upper():
+                    return {"success": False, "error": text}
+                return {"success": True, "filename": filename}
+            else:
+                error = res.get("error", "Unknown error") if isinstance(res, dict) else str(res)
+                return {"success": False, "error": error}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
     def action_delete_file(self) -> None:
+        if not self._has_write_permission():
+            self._set_status(f"No write permission (current: {self.active_box_permission})")
+            return
         file_id = self._selected_file_id()
         if not file_id:
             self._set_status("Select a file first")
@@ -1174,12 +1451,25 @@ class ShadowBoxApp(App):
         filename = self.table.get_row_at(self.table.cursor_row)[0] if self.table else ""
         prompt = f"Delete file '{filename}'?"
         self.push_screen(
-            DeleteConfirmModal(prompt), lambda ok: self._handle_delete_file(ok, file_id)
+            DeleteConfirmModal(prompt), lambda ok: self._handle_delete_file(ok, file_id, filename)
         )
 
-    def _handle_delete_file(self, confirmed: bool, file_id: str) -> None:
+    def _handle_delete_file(self, confirmed: bool, file_id: str, filename: str = "") -> None:
         if not confirmed:
             return
+        # Remote box: delete via network
+        if self.active_remote_box is not None:
+            ip = self.active_remote_box["ip"]
+            port = self.active_remote_box["port"]
+            self._set_status(f"Deleting from remote...")
+            self.run_worker(
+                lambda: self._remote_delete_worker(ip, port, filename),
+                name="remote_delete_worker",
+                exclusive=True,
+                thread=True,
+            )
+            return
+        # Local box: use file manager
         try:
             self._set_status("Deleting...")
             self.ctx.fm.delete_file(file_id, soft=True)
@@ -1328,6 +1618,11 @@ class ShadowBoxApp(App):
             self._set_status(f"Delete failed: {exc}")
 
     def action_box_info(self) -> None:
+        # Handle remote box info - show modal with connection details
+        if self.active_remote_box:
+            self._show_remote_box_files(self.active_remote_box, show_modal=True)
+            return
+        # Local box info
         if not self.ctx.active_box:
             return
         info = self.ctx.fm.get_box_info(
@@ -1389,6 +1684,18 @@ class ShadowBoxApp(App):
             storage_root = str(self.ctx.fm.storage.root) if hasattr(self.ctx.fm.storage, 'root') else None
             env = init_env(db_path=db_path, storage_root=storage_root, username=username)
             select_box(env, box_name)
+
+            # Create share records for each write user BEFORE starting server
+            # First ensure each user exists in the DB (init_env auto-creates if missing)
+            share_errors = []
+            for write_user in result.write_usernames:
+                # Create user if doesn't exist by calling init_env with their username
+                init_env(db_path=db_path, storage_root=storage_root, username=write_user)
+                # Now share the box with them
+                share_result = share_box(env, box_name, write_user, "write")
+                if share_result.startswith("ERROR"):
+                    share_errors.append(f"{write_user}: {share_result}")
+
             context = {"mode": "core", "env": env}
 
             # Advertise the service
@@ -1411,7 +1718,8 @@ class ShadowBoxApp(App):
                 "box_name": box_name,
                 "code": code,
                 "is_public": result.is_public,
-                "permission": result.permission,
+                "write_usernames": result.write_usernames,
+                "share_errors": share_errors,
                 "username": username,
                 "zeroconf": zeroconf,
                 "info": info,
@@ -1488,6 +1796,9 @@ class ShadowBoxApp(App):
 
     # Edit file metadata (tags + description)
     def action_edit_file(self) -> None:
+        if not self._has_write_permission():
+            self._set_status(f"No write permission (current: {self.active_box_permission})")
+            return
         file_id = self._selected_file_id()
         if not file_id:
             self._set_status("Select a file first")
@@ -1668,15 +1979,22 @@ class ShadowBoxApp(App):
                 )
                 self.refresh_boxes()
 
+                # Show any share errors
+                if result.get("share_errors"):
+                    for err in result["share_errors"]:
+                        self.notify(err, title="Share Warning", severity="warning")
+
                 if result["is_public"]:
                     self.notify("Box is now public on LAN", title="Shared")
-                else:
-                    self.push_screen(ShareCodeModal(
-                        code=result["code"],
-                        box_name=result["box_name"],
-                        permission=result["permission"],
-                        owner=result["username"],
-                    ))
+
+                # Show the share code modal (for both public and private)
+                self.push_screen(ShareCodeModal(
+                    code=result["code"],
+                    box_name=result["box_name"],
+                    write_usernames=result.get("write_usernames", []),
+                    owner=result["username"],
+                    is_public=result["is_public"],
+                ))
             else:
                 self.pending_shares.discard(result.get("box_id", ""))
                 self.refresh_boxes()
@@ -1714,15 +2032,47 @@ class ShadowBoxApp(App):
         # Handle fetch remote files worker completion
         elif worker_name == "fetch_remote_files_worker" and result:
             if result.get("success"):
-                self._set_status(f"Connected to {result['code']}")
-                self.push_screen(ConnectSuccessModal(
-                    code=result["code"],
-                    ip=result["ip"],
-                    port=result["port"],
-                    files_preview=result["files_preview"],
-                ))
+                # Parse and display files in the table
+                files_text = result.get("files_text", "")
+                parsed_files = self._parse_remote_files(files_text)
+                self._populate_remote_files(parsed_files)
+                # Only show modal on first connect or when box info is requested
+                if result.get("show_modal"):
+                    self.push_screen(ConnectSuccessModal(
+                        code=result["code"],
+                        ip=result["ip"],
+                        port=result["port"],
+                        files_preview=result["files_preview"],
+                    ))
             else:
                 self._set_status(f"Failed to fetch files: {result.get('error')}")
+
+        # Handle remote download worker completion
+        elif worker_name == "remote_download_worker" and result:
+            if result.get("success"):
+                self._set_status(f"Saved {result['filename']} to {result['dest']}")
+            else:
+                self._set_status(f"Download failed: {result.get('error')}")
+
+        # Handle remote upload worker completion
+        elif worker_name == "remote_upload_worker" and result:
+            if result.get("success"):
+                self._set_status(f"Uploaded {result['path']}")
+                # Refresh the remote file list
+                if self.active_remote_box:
+                    self._show_remote_box_files(self.active_remote_box, show_modal=False)
+            else:
+                self._set_status(f"Upload failed: {result.get('error')}")
+
+        # Handle remote delete worker completion
+        elif worker_name == "remote_delete_worker" and result:
+            if result.get("success"):
+                self._set_status(f"Deleted {result['filename']}")
+                # Refresh the remote file list
+                if self.active_remote_box:
+                    self._show_remote_box_files(self.active_remote_box, show_modal=False)
+            else:
+                self._set_status(f"Delete failed: {result.get('error')}")
 
     def _refresh_public_boxes(self) -> None:
         """Update the public boxes list in the sidebar."""
