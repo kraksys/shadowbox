@@ -1,6 +1,7 @@
 from pathlib import Path
 import uuid
 import getpass
+import io 
 from shadowbox.database.connection import DatabaseConnection
 from shadowbox.database.models import (
     UserModel,
@@ -15,11 +16,12 @@ from shadowbox.core.exceptions import BoxNotFoundError, UserNotFoundError, Acces
 
 
 
-def init_env(db_path="./shadowbox.db", storage_root=None, username=None):
+def init_env(db_path="./shadowbox.db", storage_root=None, username=None, storage=None):
     # initialize db + storage + user + default box context
     db = DatabaseConnection(db_path)
     db.initialize()
-    storage = Storage(storage_root)
+    if storage is None: 
+        storage = Storage(storage_root)
     uname = username or getpass.getuser()
 
     um = UserModel(db)
@@ -33,7 +35,7 @@ def init_env(db_path="./shadowbox.db", storage_root=None, username=None):
 
     # Ensure default box for this user
     bm = BoxModel(db)
-    default_box = None
+    default_box = Non
     box_id = None
     for box in bm.list_by_user(user_id) or []:
         if box.get("box_name") == "default":
@@ -151,18 +153,52 @@ def format_list(env):
     return ",\n".join(f"{m.file_id}: {{Filename: {m.filename}, Size: {m.size}, Tags: {m.tags}, Status: {m.status}, Modified: {m.modified_at}}}" for m in items)
 
 
-def open_for_get(env, filename):
-    # returns a readable file object for GET from default box
-    m = find_by_filename(env, filename)
-    if not m:
-        return None
-    # unencrypted path assumed for adapter operations
-    path = env["storage"].blob_root(env["user_id"], env["box_id"]) / m.hash_sha256
-    if not path.exists():
-        return None
-    return open(path, "rb")
-
-
+def open_for_get(env, identifier):
+    """
+    Return a readable file object for GET from active box. 
+    
+    The identifier can be either; 
+    1) file_id 
+    2) filename within active box 
+    """
+    db = env["db"]
+    storage = env["storage"]
+    fm = FileModel(db) 
+    
+    meta = None 
+    
+    # Resolve by file_id first
+    candidate = fm.get(identifier) 
+    active_box_id = env.get("box_id")
+    if candidate is not None and getattr(candidate, "box_id", None) == active_box_id: 
+        meta = candidate 
+    
+    # If file_id resolution fails, fall back to filename lookup 
+    if meta is None: 
+        meta = find_by_filename(env, identifier) 
+    
+    if not meta: 
+        return None 
+        
+    # Determine owning user and box  
+    owner_id = getattr(meta, "user_id", env["user_id"])
+    box_id = meta.box_id 
+    file_hash = meta.hash_sha256 
+    if not file_hash: 
+        return None 
+        
+    # Detect per file encryption
+    if meta.is_encrypted:
+        # Implement per file encryption logic here
+        pass
+    
+    blob_path = storage.blob_root(owner_id, meta.box_id) / meta.hash_sha256
+    if not blob_path.exists():
+        return None 
+        
+    # unencrypted path assumed for adapter operations 
+    return open(blob_path, "rb") 
+    
 def finalize_put(env, tmp_path, filename):
     # import tmp file into Storage + DB in default box
 
