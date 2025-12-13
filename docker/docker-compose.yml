@@ -1,0 +1,16 @@
+services:
+  shadowbox:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: shadowbox:latest
+    container_name: shadowbox_app
+    network_mode: "host"
+    environment:
+      - SHADOWBOX_STORAGE_ROOT=/shdwbx/data
+      - TERM=xterm-256color
+      - COLORTERM=truecolor
+    volumes:
+      - ./shdwbx/data:/shdwbx/data
+    stdin_open: true
+    tty: true
