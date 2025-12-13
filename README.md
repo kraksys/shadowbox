@@ -3,10 +3,11 @@ README
 # ShadowBox
 
 GitHub: https://github.com/kraksys/shadowbox
+
 License: 
 
 
-# What is ShadowBox
+# What is ShadowBox?
 ShadowBox is a local-first, privacy-focused file-sharing and storage application. It allows you to organize files in secure, isolated Boxes and share them directly with peers on your local network (LAN) without relying on cloud providers or external internet access.
 Built with a robust Text User Interface (TUI), ShadowBox runs entirely in your terminal, offering a lightweight, keyboard-driven experience for secure data management. 
 
@@ -26,38 +27,40 @@ Setup Steps
 Install the zip file from the GitHub page and extract it anywhere you want (preferably easy to find). 
 Now you need to install the dependencies:
 
-Go into your terminal and cd to the shadowbox-main folder's directory. Once you're there, run pip install -r requirement.txt.
+Go into your terminal and cd to the shadowbox-main folder's directory. Once you're there, run `pip install -r requirement.txt.`
 
 
 # Usage
-To start the application, run the following command from the project's root (shadowbox-main\shadowbox-main\src):
-python -m shadowbox.frontend.cli.app
+To start the application, run the following command from the project's root (`shadowbox-main\shadowbox-main\src`):
+`python -m shadowbox.frontend.cli.app`
 
 
 Keyboard Shortcuts (Cheat Sheet)
-This cheat sheet is also provided in the software itself by pressing CTRL + P and clicking on the Keys bar with every key functionality (which is more than the sheet that is provided here). The interface is designed to be navigated quickly using the keyboard. 
+This cheat sheet is also provided in the software itself by pressing `CTRL + P` and clicking on the Keys bar with every key functionality (which is more than the sheet that is provided here). The interface is designed to be navigated quickly using the keyboard. 
 
-Key	Action	Description
-n	New Box	Create a new isolated storage container (Box).
-a	Add File	Import a file from your system into the active Box.
-s	Share Box	Broadcast the current Box to the LAN (Host Mode).
-c	Connect	Connect to a peer's Box using a 4-letter code (Client Mode).
-d	Delete	Soft-delete the selected file or Box.
-/	Search	Open the live fuzzy search bar.
-t	Filter Tags	Filter the current file list by a specific tag.
-v	Versions	View and restore historical versions of a file.
-e	Edit	Edit file description or tags.
-        enter	Download	Export/Download the selected file to a local path.
-q	Quit	Safely stop all servers and exit.
+| Key   | Action        | Description                                                     |
+|------:|---------------|-----------------------------------------------------------------|
+| n     | New Box       | Create a new isolated storage container (Box).                  |
+| a     | Add File      | Import a file from your system into the active Box.             |
+| s     | Share Box     | Broadcast the current Box to the LAN (Host Mode).               |
+| c     | Connect       | Connect to a peer's Box using a 4-letter code (Client Mode).    |
+| d     | Delete        | Soft-delete the selected file or Box.                           |
+| /     | Search        | Open the live fuzzy search bar.                                  |
+| t     | Filter Tags   | Filter the current file list by a specific tag.                 |
+| v     | Versions      | View and restore historical versions of a file.                |
+| e     | Edit          | Edit file description or tags.                                  |
+| Enter | Download      | Export/Download the selected file to a local path.              |
+| q     | Quit          | Safely stop all servers and exit.                               |
 
 How Sharing Works
 
 The host can create a Box or use the default provided Box.
-The Host then selects a Box and presses s.
-ShadowBox generates a random 4-letter code (e.g., ABCD) and starts a local TCP server.
-The service _shadowboxabcd._tcp.local is broadcast.
-The Client presses c or clicks on the desired box in the Public Box space and enters ABCD.
-The Client resolves the Host's IP automatically and establishes a direct, secure TCP stream to download files.
+
+- The Host selects a Box and presses `s`.
+- ShadowBox generates a random 4-letter code (e.g., `ABCD`) and starts a local TCP server.
+- The service `_shadowboxabcd._tcp.local` is broadcast.
+- The Client presses `c` or clicks the desired Box in the Public Box space and enters `ABCD`.
+- The Client resolves the Host's IP automatically and establishes a direct, secure TCP stream to download files.
 
 # Visuals:
 
@@ -80,14 +83,16 @@ The Client resolves the Host's IP automatically and establishes a direct, secure
 The project includes a comprehensive test suite covering all modules.
 
 To run the tests:
-pytest
+`pytest`
 To view coverage reports:
-pytest --cov=shadowbox
+`pytest --cov=shadowbox`
 
 
 # Authors
 Stavros Valsamis, Maxim Dmitrievich, Matthieu Klopp, Atanas Malinkov, Patrik Levak & Ahmed Al Kurwi.
+
 Software Development Course (Fall/Winter 2025)
 
 # Project status
 Project finished, development stopped
+
