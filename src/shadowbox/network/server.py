@@ -191,7 +191,7 @@ def handle_client(conn, addr, context):
                 else:
                     try:
                         if not os.path.isfile(filepath):
-                            msg = f"ERROR: File Not Found: {file_name}\n"
+                            msg = f"ERROR: File not found: {file_name}\n"
                             conn.sendall(msg.encode())
                             print(f"File not found (test): {file_name}")
                         else:
@@ -208,7 +208,7 @@ def handle_client(conn, addr, context):
                 env = context["env"]
                 f = open_for_get(env, file_name)
                 if not f:
-                    msg = f"ERROR: File Not Found: {file_name}\n"
+                    msg = f"ERROR: File not found: {file_name}\n"
                     conn.sendall(msg.encode())
                     print(f"File not found: {file_name}")
                 else:

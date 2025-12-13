@@ -1,26 +1,30 @@
-from pathlib import Path
-import uuid
 import getpass
-import io 
+import io
+import uuid
+from pathlib import Path
+
+from shadowbox.core.exceptions import (
+    AccessDeniedError,
+    BoxNotFoundError,
+    UserNotFoundError,
+)
+from shadowbox.core.models import Box, BoxShare, FileMetadata
+from shadowbox.core.storage import Storage
 from shadowbox.database.connection import DatabaseConnection
 from shadowbox.database.models import (
-    UserModel,
-    FileModel,
     BoxModel,
     BoxShareModel,
+    FileModel,
+    UserModel,
     row_to_metadata,
 )
-from shadowbox.core.models import FileMetadata, Box, BoxShare
-from shadowbox.core.storage import Storage
-from shadowbox.core.exceptions import BoxNotFoundError, UserNotFoundError, AccessDeniedError
-
 
 
 def init_env(db_path="./shadowbox.db", storage_root=None, username=None, storage=None):
     # initialize db + storage + user + default box context
     db = DatabaseConnection(db_path)
     db.initialize()
-    if storage is None: 
+    if storage is None:
         storage = Storage(storage_root)
     uname = username or getpass.getuser()
 
@@ -35,7 +39,7 @@ def init_env(db_path="./shadowbox.db", storage_root=None, username=None, storage
 
     # Ensure default box for this user
     bm = BoxModel(db)
-    default_box = Non
+    default_box = None
     box_id = None
     for box in bm.list_by_user(user_id) or []:
         if box.get("box_name") == "default":
@@ -48,7 +52,13 @@ def init_env(db_path="./shadowbox.db", storage_root=None, username=None, storage
     if default_box:
         box_id = default_box["box_id"]
 
-    return {"db": db, "storage": storage, "username": uname, "user_id": user_id, "box_id": box_id}
+    return {
+        "db": db,
+        "storage": storage,
+        "username": uname,
+        "user_id": user_id,
+        "box_id": box_id,
+    }
 
 
 def check_permission(env, box_id, required_permission="read") -> bool:
@@ -66,7 +76,7 @@ def check_permission(env, box_id, required_permission="read") -> bool:
         return False  # Box doesn't exist
 
     # The owner always has full permission
-    if box['user_id'] == user_id:
+    if box["user_id"] == user_id:
         return True
 
     # If not the owner, check the shares table
@@ -88,8 +98,7 @@ def find_by_filename(env, filename):
     tags = [
         r["tag_name"]
         for r in db.fetch_all(
-            "SELECT tag_name FROM tags "
-            "WHERE entity_type = 'file' AND entity_id = ?",
+            "SELECT tag_name FROM tags WHERE entity_type = 'file' AND entity_id = ?",
             (row["file_id"],),
         )
     ]
@@ -105,12 +114,12 @@ def select_box(env, namespaced_box: str) -> dict:
     current_user_id = env["user_id"]
 
     # 1. Parse the new format
-    if '/' not in namespaced_box:
+    if "/" not in namespaced_box:
         # For convenience, if no slash is provided, assume the user means their own box.
         owner_username = env["username"]
         box_name = namespaced_box
     else:
-        parts = namespaced_box.split('/', 1)
+        parts = namespaced_box.split("/", 1)
         if len(parts) != 2:
             raise ValueError("Invalid box format. Use 'owner_username/box_name'.")
         owner_username, box_name = parts
@@ -121,20 +130,24 @@ def select_box(env, namespaced_box: str) -> dict:
     if not owner:
         raise UserNotFoundError(f"The box owner '{owner_username}' does not exist.")
 
-    owner_id = owner['user_id']
+    owner_id = owner["user_id"]
 
     bm = BoxModel(db)
     owned_boxes = bm.list_by_user(owner_id) or []
     target_box = next((b for b in owned_boxes if b.get("box_name") == box_name), None)
 
     if not target_box:
-        raise BoxNotFoundError(f"Box '{box_name}' owned by '{owner_username}' not found.")
+        raise BoxNotFoundError(
+            f"Box '{box_name}' owned by '{owner_username}' not found."
+        )
 
-    box_id = target_box['box_id']
+    box_id = target_box["box_id"]
 
     # 3. Verify the current user has permission to access this box
     if not check_permission(env, box_id, "read"):
-        raise AccessDeniedError(f"You do not have permission to access the box '{namespaced_box}'.")
+        raise AccessDeniedError(
+            f"You do not have permission to access the box '{namespaced_box}'."
+        )
 
     # 4. If all checks pass, set the active box in the environment
     env["box_id"] = box_id
@@ -150,55 +163,70 @@ def format_list(env):
         raise AccessDeniedError("You do not have read permission for this box.")
     fm = FileModel(env["db"])
     items = fm.list_by_box(env["box_id"], include_deleted=False, limit=1000, offset=0)
-    return ",\n".join(f"{m.file_id}: {{Filename: {m.filename}, Size: {m.size}, Tags: {m.tags}, Status: {m.status}, Modified: {m.modified_at}}}" for m in items)
+    return ",\n".join(
+        f"{m.file_id}: {{Filename: {m.filename}, Size: {m.size}, Tags: {m.tags}, Status: {m.status}, Modified: {m.modified_at}}}"
+        for m in items
+    )
 
 
 def open_for_get(env, identifier):
     """
-    Return a readable file object for GET from active box. 
-    
-    The identifier can be either; 
-    1) file_id 
-    2) filename within active box 
+    Return a readable file object for GET from active box.
+
+    The identifier can be either;
+    1) file_id
+    2) filename within active box
     """
     db = env["db"]
     storage = env["storage"]
-    fm = FileModel(db) 
-    
-    meta = None 
-    
+    fm = FileModel(db)
+
+    meta = None
+
     # Resolve by file_id first
-    candidate = fm.get(identifier) 
+    candidate = fm.get(identifier)
     active_box_id = env.get("box_id")
-    if candidate is not None and getattr(candidate, "box_id", None) == active_box_id: 
-        meta = candidate 
-    
-    # If file_id resolution fails, fall back to filename lookup 
-    if meta is None: 
-        meta = find_by_filename(env, identifier) 
-    
-    if not meta: 
-        return None 
-        
-    # Determine owning user and box  
+    if candidate is not None and getattr(candidate, "box_id", None) == active_box_id:
+        meta = candidate
+
+    # If file_id resolution fails, fall back to filename lookup
+    if meta is None:
+        meta = find_by_filename(env, identifier)
+
+    if not meta:
+        return None
+
+    # Determine owning user and box
     owner_id = getattr(meta, "user_id", env["user_id"])
-    box_id = meta.box_id 
-    file_hash = meta.hash_sha256 
-    if not file_hash: 
-        return None 
-        
-    # Detect per file encryption
-    if meta.is_encrypted:
-        # Implement per file encryption logic here
-        pass
-    
-    blob_path = storage.blob_root(owner_id, meta.box_id) / meta.hash_sha256
-    if not blob_path.exists():
-        return None 
-        
-    # unencrypted path assumed for adapter operations 
-    return open(blob_path, "rb") 
-    
+    box_id = meta.box_id
+    file_hash = meta.hash_sha256
+    if not file_hash:
+        return None
+
+    # Detect per file encryption flag
+    custom = getattr(meta, "custom_metadata", {}) or {}
+    is_encrypted = bool(custom.get("encrypted", False))
+
+    if is_encrypted:
+        if getattr(storage, "encrypt", None) is None:
+            return None
+
+        encrypted_path = storage.blob_root(owner_id, box_id) / f"{file_hash}.enc"
+        if not encrypted_path.exists():
+            return None
+
+        blob = encrypted_path.read_bytes()
+
+        plaintext = storage.encrypt.decrypt_bytes(blob, box_id)
+        return io.BytesIO(plaintext)
+
+    # For non encrypted files we serve raw blobs
+    path = storage.blob_root(owner_id, box_id) / file_hash
+    if not path.exists():
+        return None
+    return open(path, "rb")
+
+
 def finalize_put(env, tmp_path, filename):
     # import tmp file into Storage + DB in default box
 
@@ -213,8 +241,24 @@ def finalize_put(env, tmp_path, filename):
         raise BoxNotFoundError("The target box does not exist.")
     box_owner_id = box["user_id"]
 
-    # Store the blob in the owner's storage path
-    info = env["storage"].put(box_owner_id, env["box_id"], tmp_path)
+    storage = env["storage"]
+    # We check if the box is encrypted at storage layer
+    # If yes, we store encrypted, otherwise its plain storage
+    should_encrypt = False
+    if getattr(storage, "encrypt", None) is not None:
+        try:
+            should_encrypt = storage.is_box_encryption_enabled(
+                box_owner_id, env["box_id"]
+            )
+        except Exception:
+            should_encrypt = False
+
+    if should_encrypt:
+        info = storage.put_encrypted(box_owner_id, env["box_id"], tmp_path)
+        is_encrypted = True
+    else:
+        info = storage.put(box_owner_id, env["box_id"], tmp_path)
+        is_encrypted = False
 
     um = UserModel(db)
     fm = FileModel(db)
@@ -231,6 +275,7 @@ def finalize_put(env, tmp_path, filename):
         hash_sha256=info["hash"],
         owner=uploader["username"],  # Record who uploaded it
         tags=[],
+        custom_metadata={"encrypted": True} if is_encrypted else {},
     )
     fm.create(meta)
 
@@ -246,7 +291,6 @@ def delete_filename(env, filename):
 
     if not check_permission(env, env["box_id"], "write"):
         raise AccessDeniedError("You do not have write permission for this box.")
-
 
     m = find_by_filename(env, filename)
     if not m:
@@ -281,6 +325,7 @@ def list_boxes(env) -> str:
     except Exception as e:
         return f"ERROR: Failed to list boxes: {e}\n"
 
+
 # TODO: Add a permission check to share_box as well,
 # so only 'admin' level users can re-share a box.
 def share_box(env, box_name: str, share_with_username: str, permission: str) -> str:
@@ -293,7 +338,9 @@ def share_box(env, box_name: str, share_with_username: str, permission: str) -> 
 
     try:
         user_boxes = bm.list_by_user(user_id)
-        box_to_share = next((box for box in user_boxes if box["box_name"] == box_name), None)
+        box_to_share = next(
+            (box for box in user_boxes if box["box_name"] == box_name), None
+        )
         if not box_to_share:
             raise BoxNotFoundError(f"Box '{box_name}' not found for the current user.")
 
@@ -364,19 +411,21 @@ def list_shared_with_user(env) -> str:
     try:
         # Get all share records where this user is the recipient
         all_shares = bsm.list_by_user(user_id)
-        recipient_shares = [s for s in all_shares if s['shared_with_user_id'] == user_id]
+        recipient_shares = [
+            s for s in all_shares if s["shared_with_user_id"] == user_id
+        ]
 
         if not recipient_shares:
             return "No boxes have been shared with you.\n"
 
         response_lines = ["Boxes shared with you:"]
         for share in recipient_shares:
-            box = bm.get(share['box_id'])
-            owner = um.get(share['shared_by_user_id'])
+            box = bm.get(share["box_id"])
+            owner = um.get(share["shared_by_user_id"])
 
             if box and owner:
-                owner_username = owner['username']
-                permission = share['permission_level']
+                owner_username = owner["username"]
+                permission = share["permission_level"]
                 line = (
                     f"- BOX_ID: {box['box_id']}\n"
                     f"  BOX_NAME: {owner_username}/{box['box_name']}\n"
