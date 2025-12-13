@@ -1,0 +1,35 @@
+.git
+.gitignore
+
+# Ignore Python cache and build artifacts
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+build
+dist
+*.egg-info
+.pytest_cache
+.coverage
+htmlcov
+kaggle
+storage
+venv
+docker
+
+
+# Ignore virtual environments
+.venv
+venv
+ENV
+
+# Ignore local IDE settings
+.vscode
+.idea
+
+# Ignore local data/temp files
+shadowbox_data
+*.log
+*.sqlite
+storage

@@ -39,17 +39,28 @@ Default port = 9999
         python -m shadowbox.network.server --mode test --shared-dir ./shared_dir --port 9999
         python -m shadowbox.network.server --mode core --db ./shadowbox.db --storage-root ~/.shdwbox --username bob --port 9999
 """
-import os
-import socket
-import threading
+
 import argparse
+import os
 import random
+import socket
 import string
+import threading
 
+from zeroconf import ServiceInfo, Zeroconf
 
-from zeroconf import Zeroconf, ServiceInfo
-
-from .adapter import init_env, format_list, open_for_get, finalize_put, delete_filename, select_box, list_boxes, share_box, list_available_users, list_shared_with_user
+from .adapter import (
+    delete_filename,
+    finalize_put,
+    format_list,
+    init_env,
+    list_available_users,
+    list_boxes,
+    list_shared_with_user,
+    open_for_get,
+    select_box,
+    share_box,
+)
 
 SERVICE_TYPE = "_shadowbox._tcp.local."
 file_locks = {}
@@ -57,6 +68,7 @@ file_locks_lock = threading.Lock()
 
 GLOBAL_LISTENING_SOCKET = None
 SERVER_SHOULD_STOP = threading.Event()
+
 
 def get_file_lock(path):
     """Return a Lock object for a given path."""
@@ -95,12 +107,12 @@ def get_local_ip():
         s.close()
 
 
-
-
 def handle_client(conn, addr, context):
     """Handle a single client connection."""
     print(f"[+] Connection from {addr}")
-    conn.settimeout(10.0)  # The idea is to open a new connection for every action so 10s is enough
+    conn.settimeout(
+        10.0
+    )  # The idea is to open a new connection for every action so 10s is enough
     try:
         data = b""
         while not data.endswith(b"\n"):
@@ -122,7 +134,12 @@ def handle_client(conn, addr, context):
                     if os.path.isdir(os.path.join(shared_dir, file)):
                         extra_files = os.listdir(os.path.join(shared_dir, file))
                         response = (
-                            response + "\n" + file + " (dir)" + "\n | " + "\n | ".join(extra_files)
+                            response
+                            + "\n"
+                            + file
+                            + " (dir)"
+                            + "\n | "
+                            + "\n | ".join(extra_files)
                         )
                     else:
                         response = response + "\n" + file
@@ -148,7 +165,7 @@ def handle_client(conn, addr, context):
                 except Exception as e:
                     msg = f"ERROR: Could not select box: {e}\n"
                     conn.sendall(msg.encode())
-        
+
         elif line.upper().startswith("GET "):
             # TODO: it needs to be able to get files from inside other directories and create the given directory
             # I am not doing this before I talk with the db team about how to mange this
@@ -169,19 +186,19 @@ def handle_client(conn, addr, context):
                     try:
                         conn.sendall(msg.encode())
                     except Exception:
-                        pass 
+                        pass
                     print(f"GET failed (lock busy): {file_name}")
-                else: 
+                else:
                     try:
                         if not os.path.isfile(filepath):
-                            msg = f"ERROR: File Not Found: {file_name}\n"
+                            msg = f"ERROR: File not found: {file_name}\n"
                             conn.sendall(msg.encode())
                             print(f"File not found (test): {file_name}")
-                        else: 
+                        else:
                             with open(filepath, "rb") as f:
                                 while True:
                                     chunk = f.read(8192)
-                                    if not chunk: 
+                                    if not chunk:
                                         break
                                     conn.sendall(chunk)
                             print(f"Sent file (test): {file_name}")
@@ -190,11 +207,11 @@ def handle_client(conn, addr, context):
             else:
                 env = context["env"]
                 f = open_for_get(env, file_name)
-                if not f: 
-                    msg = f"ERROR: File Not Found: {file_name}\n"
+                if not f:
+                    msg = f"ERROR: File not found: {file_name}\n"
                     conn.sendall(msg.encode())
                     print(f"File not found: {file_name}")
-                else: 
+                else:
                     with f:
                         while True:
                             chunk = f.read(8192)
@@ -233,32 +250,34 @@ def handle_client(conn, addr, context):
                     if not acquired:
                         conn.sendall(b"ERROR: Could not acquire file lock\n")
                         print(f"PUT failed (lock busy): {file_name}")
-                        return 
+                        return
                     try:
                         os.makedirs(os.path.dirname(filepath), exist_ok=True)
                         conn.sendall(b"READY\n")
-                        remaining = total_size 
+                        remaining = total_size
                         with open(tmp_path, "wb") as out_f:
                             while remaining > 0:
                                 chunk = conn.recv(min(8192, remaining))
                                 if not chunk:
-                                    raise IOError("connection closed before all bytes received")
+                                    raise IOError(
+                                        "connection closed before all bytes received"
+                                    )
                                 out_f.write(chunk)
                                 remaining -= len(chunk)
                         os.replace(tmp_path, filepath)
                         conn.sendall(f"OK: Uploaded {file_name}\n".encode())
                         print(f"Uploaded file: {file_name} ({total_size} bytes)")
-                    except Exception as e: 
+                    except Exception as e:
                         try:
                             if os.path.exists(tmp_path):
                                 os.remove(tmp_path)
                         except Exception:
-                            pass 
+                            pass
                         msg = f"ERROR: Upload failed: {e}\n"
                         try:
                             conn.sendall(msg.encode())
                         except Exception:
-                            pass 
+                            pass
                         print(f"Upload failed for {file_name}: {e}")
                     finally:
                         f_lock.release()
@@ -275,37 +294,39 @@ def handle_client(conn, addr, context):
                     if not acquired:
                         conn.sendall(b"ERROR: Could not acquire file lock\n")
                         print(f"PUT failed (core, lock busy): {file_name}")
-                        return 
+                        return
 
-                    try: 
+                    try:
                         conn.sendall(b"READY\n")
-                        remaining = total_size 
+                        remaining = total_size
                         with open(tmp_path, "wb") as out_f:
                             while remaining > 0:
                                 chunk = conn.recv(min(8192, remaining))
-                                if not chunk: 
-                                    raise IOError("connection closed before all bytes received")
+                                if not chunk:
+                                    raise IOError(
+                                        "connection closed before all bytes received"
+                                    )
                                 out_f.write(chunk)
-                                remaining -= len(chunk) 
-                        finalize_put(env, tmp_path, file_name) 
+                                remaining -= len(chunk)
+                        finalize_put(env, tmp_path, file_name)
                         try:
                             if os.path.exists(tmp_path):
                                 os.remove(tmp_path)
                         except Exception:
-                            pass 
+                            pass
                         conn.sendall(f"OK: Uploaded {file_name}\n".encode())
                         print(f"Uploaded file: {file_name} ({total_size} bytes)")
                     except Exception as e:
-                        try: 
+                        try:
                             if os.path.exists(tmp_path):
                                 os.remove(tmp_path)
                         except Exception:
-                            pass 
+                            pass
                         msg = f"ERROR: Upload failed: {e}\n"
                         try:
                             conn.sendall(msg.encode())
                         except Exception:
-                            pass 
+                            pass
                         print(f"Upload failed for {file_name}: {e}")
                     finally:
                         f_lock.release()
@@ -321,7 +342,6 @@ def handle_client(conn, addr, context):
             #     print(f"DELETE failed, is a directory: {file_name}")
             #     return
 
-
             if context["mode"] == "test":
                 shared_dir = context["shared_dir"]
                 filepath = os.path.join(shared_dir, file_name)
@@ -329,14 +349,14 @@ def handle_client(conn, addr, context):
                     msg = f"ERROR: File not found: {file_name}\n"
                     conn.sendall(msg.encode())
                     print(f"DELETE failed, not found: {file_name}")
-                    return 
+                    return
                 try:
                     if os.path.isdir(filepath):
                         delete_path(filepath)
                         msg = f"OK: Deleted: {file_name}\n"
                         conn.sendall(msg.encode())
                         print(f"Deleted directory: {file_name}")
-                    else: 
+                    else:
                         os.remove(filepath)
                         msg = f"OK: Deleted {file_name}\n"
                         conn.sendall(msg.encode())
@@ -345,18 +365,17 @@ def handle_client(conn, addr, context):
                     msg = f"ERROR: Could not delete {file_name}: {e}\n"
                     conn.sendall(msg.encode())
                     print(f"Error deleting {file_name}: {e}")
-            else: 
+            else:
                 env = context["env"]
                 ok = delete_filename(env, file_name)
                 if ok:
                     msg = f"OK: Deleted {file_name}\n"
                     conn.sendall(msg.encode())
                     print(f"Deleted: {file_name}")
-                else: 
+                else:
                     msg = f"ERROR: File not found: {file_name}\n"
                     conn.sendall(msg.encode())
                     print(f"DELETE failed, not found: {file_name}")
-
 
         elif line.upper() == "LIST_BOXES":
             if context["mode"] == "core":
@@ -369,12 +388,16 @@ def handle_client(conn, addr, context):
             if context["mode"] == "core":
                 parts = line.strip().split(" ", 3)
                 if len(parts) < 3:
-                    conn.sendall(b"ERROR: SHARE_BOX requires <box_name> and <share_with_username>\n")
+                    conn.sendall(
+                        b"ERROR: SHARE_BOX requires <box_name> and <share_with_username>\n"
+                    )
                 else:
                     box_name = parts[1]
                     share_with_user = parts[2]
                     permission = parts[3] if len(parts) > 3 else "read"
-                    response = share_box(context["env"], box_name, share_with_user, permission) #look at this when calling share box and spinning up the server so we can avoid repetitions
+                    response = share_box(
+                        context["env"], box_name, share_with_user, permission
+                    )  # look at this when calling share box and spinning up the server so we can avoid repetitions
                     conn.sendall(response.encode())
             else:
                 conn.sendall(b"ERROR: Command only available in core mode\n")
@@ -394,7 +417,6 @@ def handle_client(conn, addr, context):
         elif line.upper() == "STOP":
             conn.sendall(b"OK: Server is shutting down.\n")
             stop_server()
-
 
         else:
             msg = "ERROR - Unknown command\n"
@@ -422,7 +444,7 @@ def start_tcp_server(context, port):
     SERVER_SHOULD_STOP.clear()
     if context["mode"] == "test":
         print(f"TCP server listening on port {port}, serving '{context['shared_dir']}'")
-    else: 
+    else:
         print(f"TCP server listening on port {port}, core mode (DB+Storage)")
     while not SERVER_SHOULD_STOP.is_set():
         try:
@@ -430,7 +452,9 @@ def start_tcp_server(context, port):
             s.settimeout(0.5)
             conn, addr = s.accept()
             s.settimeout(None)  # Clear timeout after connection is accepted
-            t = threading.Thread(target=handle_client, args=(conn, addr, context), daemon=True)
+            t = threading.Thread(
+                target=handle_client, args=(conn, addr, context), daemon=True
+            )
             t.start()
         except socket.timeout:
             continue  # Timeout occurred, loop back to check SERVER_SHOULD_STOP
@@ -467,17 +491,28 @@ def advertise_service(name, port, service):
         server=f"{socket.gethostname()}.local.",
     )
     zeroconf.register_service(info)
-    print(f"Zeroconf service registered: {name} @ {local_ip}:{port}, SERVICE_TYPE = {service}")
+    print(
+        f"Zeroconf service registered: {name} @ {local_ip}:{port}, SERVICE_TYPE = {service}"
+    )
     return zeroconf, info
 
 
 def give_code() -> str:
     # choose from all lowercase letter
     letters = string.ascii_lowercase
-    result_str = ''.join(random.choice(letters) for i in range(4))
+    result_str = "".join(random.choice(letters) for i in range(4))
     return result_str
 
-def share_with(code_to_share: str, username: str, box_name: str, permissions: str, db = "./shadowbox.db", storage_root = None, port = 9999):
+
+def share_with(
+    code_to_share: str,
+    username: str,
+    box_name: str,
+    permissions: str,
+    db="./shadowbox.db",
+    storage_root=None,
+    port=9999,
+):
     """
     Function that integrates everything from adapter and server logic to spin up a server every time a User wants to share a box.
     Usage:
@@ -500,29 +535,28 @@ def share_with(code_to_share: str, username: str, box_name: str, permissions: st
     if not code_to_share:
         code_to_share = ""
 
-    #create the env that we will use for the server
+    # create the env that we will use for the server
     env = init_env(db_path=db, storage_root=storage_root, username=username)
     # {"db": db, "storage": storage, "username": uname, "user_id": user_id, "box_id": default_box["box_id"]}
     context = {"mode": "core", "env": env}
     name = f"FileServer-{socket.gethostname()}"
 
-    #insert the code in the service name
+    # insert the code in the service name
     global SERVICE_TYPE
     SERVICE_TYPE = f"_shadowbox{code_to_share}._tcp.local."
 
-    #from adapter
+    # from adapter
     select_box(env, box_name)
 
-    #broadcast it on the mDNS
+    # broadcast it on the mDNS
     zeroconf, info = advertise_service(name, port, service=SERVICE_TYPE)
 
-    #start the server
+    # start the server
     try:
         start_tcp_server(context, port)
     except KeyboardInterrupt:
         print("\nShutting down...")
     finally:
-
         print("Unregistering Zeroconf service...")
         try:
             zeroconf.unregister_service(info)
@@ -530,8 +564,19 @@ def share_with(code_to_share: str, username: str, box_name: str, permissions: st
             pass
         zeroconf.close()
 
-def share_with_everyone(box_name: str, permissions: str, db = "./shadowbox.db", storage_root = None, port = 9999):
-    share_with(code_to_share="", username="Common_username", box_name = box_name, permissions = permissions, db = db, storage_root = storage_root, port = port)
+
+def share_with_everyone(
+    box_name: str, permissions: str, db="./shadowbox.db", storage_root=None, port=9999
+):
+    share_with(
+        code_to_share="",
+        username="Common_username",
+        box_name=box_name,
+        permissions=permissions,
+        db=db,
+        storage_root=storage_root,
+        port=port,
+    )
 
 
 def stop_server():
@@ -556,7 +601,6 @@ def stop_server():
         print(f"Error closing server socket: {e}")
 
 
-
 # Main entry point (augmented with argparse)
 def main():
     parser = argparse.ArgumentParser(description="ShadowBox LAN server")
@@ -577,7 +621,9 @@ def main():
             os.makedirs(shared_dir)
         context = {"mode": "test", "shared_dir": shared_dir}
     else:
-        env = init_env(db_path=args.db_path, storage_root=args.storage_root, username=args.username)
+        env = init_env(
+            db_path=args.db_path, storage_root=args.storage_root, username=args.username
+        )
         context = {"mode": "core", "env": env}
 
     name = args.name or f"FileServer-{socket.gethostname()}"
