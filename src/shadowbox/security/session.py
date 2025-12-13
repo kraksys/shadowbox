@@ -12,7 +12,8 @@ import time
 from typing import Optional
 
 from .kdf import derive_master_key, generate_salt
-from .keystore import save_key, load_key, delete_key
+# import assess_keyring_backend at the top of the file
+from .keystore import save_key, load_key, delete_key, assess_keyring_backend
 
 
 class SessionManager:
@@ -100,7 +101,6 @@ class SessionManager:
         if self._master_key is None:
             raise RuntimeError("No master key to persist")
         # Check keyring backend security heuristics before persisting. avoids storing keys in plaintext
-        from .keystore import assess_keyring_backend
 
         secure, msg = assess_keyring_backend()
         if not secure:

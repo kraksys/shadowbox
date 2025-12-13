@@ -22,8 +22,6 @@ from shadowbox.core.models import Box, BoxShare
 from shadowbox.core.storage import Storage
 from shadowbox.database.connection import DatabaseConnection
 
-sys.path.append(str(Path(__file__).resolve().parents[2] / "src"))
-
 
 @pytest.fixture()
 def file_manager(tmp_path: Path) -> FileManager:
@@ -473,3 +471,248 @@ def test_delete_box_removes_files_and_shares(file_manager: FileManager, tmp_path
     assert file_manager.box_model.get(box.box_id) is None
     assert file_manager.box_share_model.list_by_box(box.box_id) == []
     assert file_manager.file_model.list_by_box(box.box_id) == []
+
+
+def test_update_file_success_with_versioning(file_manager: FileManager, tmp_path: Path) -> None:
+    """Cover update_file: ensure content updates, quota adjusts, and version increments."""
+    # 1. Setup initial file
+    user = file_manager.create_user("updater")
+    box = file_manager.create_box(user.user_id, "versions")
+
+    src_v1 = tmp_path / "file_v1.txt"
+    src_v1.write_bytes(b"version 1 data")  # 14 bytes
+
+    meta = file_manager.add_file(user.user_id, box.box_id, str(src_v1))
+    original_size = meta.size
+
+    # 2. Update file (make it larger)
+    src_v2 = tmp_path / "file_v2.txt"
+    src_v2.write_bytes(b"version 2 data is longer")  # 24 bytes
+
+    updated_meta = file_manager.update_file(
+        meta.file_id,
+        str(src_v2),
+        change_description="Fix typo"
+    )
+
+    # 3. Verify Metadata updates
+    assert updated_meta.version == 2
+    assert updated_meta.size == 24
+    assert updated_meta.filename == "file_v2.txt"
+
+    # 4. Verify Quota Update (User usage should increase by diff: 24 - 14 = 10 bytes)
+    user_rec = file_manager.user_model.get(user.user_id)
+    assert user_rec["used_bytes"] == 24
+
+    # 5. Verify Version Snapshot created
+    # (assuming VersionManager works, we just check integration here)
+    versions = file_manager.list_file_versions(meta.file_id)
+    assert len(versions) == 1
+    assert versions[0]["version_number"] == 1
+    assert versions[0]["size"] == 14
+
+
+def test_update_file_respects_quota(file_manager: FileManager, tmp_path: Path) -> None:
+    """Cover update_file quota check."""
+    user = file_manager.create_user("quota_user")
+    # Set small quota (20 bytes)
+    file_manager.db.execute("UPDATE users SET quota_bytes = ? WHERE user_id = ?", (20, user.user_id))
+
+    box = file_manager.create_box(user.user_id, "box")
+
+    src = tmp_path / "small.txt"
+    src.write_bytes(b"12345")  # 5 bytes
+    meta = file_manager.add_file(user.user_id, box.box_id, str(src))
+
+    # Update with file that exceeds quota (25 bytes > 20 bytes)
+    large_src = tmp_path / "large.txt"
+    large_src.write_bytes(b"1" * 25)
+
+    with pytest.raises(QuotaExceededError):
+        file_manager.update_file(meta.file_id, str(large_src))
+
+
+def test_update_file_missing_errors(file_manager: FileManager, tmp_path: Path) -> None:
+    """Cover FileNotFoundError paths in update_file."""
+    user = file_manager.create_user("err_user")
+    box = file_manager.create_box(user.user_id, "box")
+    src = tmp_path / "file.txt"
+    src.write_text("content")
+    meta = file_manager.add_file(user.user_id, box.box_id, str(src))
+
+    # Case 1: Source file missing
+    with pytest.raises(FileNotFoundError, match="Source file not found"):
+        file_manager.update_file(meta.file_id, "/non/existent/path.txt")
+
+    # Case 2: File ID missing in DB
+    with pytest.raises(FileNotFoundError, match="File with ID"):
+        file_manager.update_file("bad-id", str(src))
+
+
+# ==============================================================================
+# Tests for add_files_bulk (Lines 522-605)
+# ==============================================================================
+
+def test_add_files_bulk_success(file_manager: FileManager, tmp_path: Path) -> None:
+    """Cover add_files_bulk: happy path with multiple valid files."""
+    user = file_manager.create_user("bulk_adder")
+    box = file_manager.create_box(user.user_id, "bulk_box")
+
+    # Create 3 files
+    files = []
+    for i in range(3):
+        p = tmp_path / f"bulk_{i}.txt"
+        p.write_text(f"content {i}")
+        files.append(str(p))
+
+    result = file_manager.add_files_bulk(user.user_id, box.box_id, files)
+
+    assert len(result["success"]) == 3
+    assert len(result["failed"]) == 0
+    assert result["success"][0].filename == "bulk_0.txt"
+
+    # Check quota updated once
+    # 3 files * 9 bytes ("content X") = 27 bytes
+    user_rec = file_manager.user_model.get(user.user_id)
+    assert user_rec["used_bytes"] == 27
+
+
+def test_add_files_bulk_partial_failures(file_manager: FileManager, tmp_path: Path) -> None:
+    """Cover add_files_bulk: mixed success and failure (missing file)."""
+    user = file_manager.create_user("mixed_adder")
+    box = file_manager.create_box(user.user_id, "box")
+
+    real_file = tmp_path / "real.txt"
+    real_file.write_text("real")
+
+    paths = [str(real_file), "/path/to/ghost.txt"]
+
+    result = file_manager.add_files_bulk(user.user_id, box.box_id, paths)
+
+    assert len(result["success"]) == 1
+    assert len(result["failed"]) == 1
+    assert result["failed"][0]["error"] == "File not found"
+
+    # DB should contain only the success
+    assert len(file_manager.list_box_files(box.box_id)) == 1
+
+
+def test_add_files_bulk_quota_check(file_manager: FileManager, tmp_path: Path) -> None:
+    """Cover add_files_bulk: pre-flight quota check prevents upload."""
+    user = file_manager.create_user("quota_bulk")
+    file_manager.db.execute("UPDATE users SET quota_bytes = ? WHERE user_id = ?", (10, user.user_id))
+    box = file_manager.create_box(user.user_id, "box")
+
+    # 2 files, 6 bytes each = 12 bytes > 10 quota
+    f1 = tmp_path / "f1.txt"
+    f1.write_bytes(b"123456")
+    f2 = tmp_path / "f2.txt"
+    f2.write_bytes(b"123456")
+
+    with pytest.raises(QuotaExceededError):
+        file_manager.add_files_bulk(user.user_id, box.box_id, [str(f1), str(f2)])
+
+    # Ensure nothing was uploaded
+    assert len(file_manager.list_box_files(box.box_id)) == 0
+
+
+def test_add_files_bulk_permissions(file_manager: FileManager, tmp_path: Path) -> None:
+    """Cover add_files_bulk: permission denied for non-owners/writers."""
+    owner = file_manager.create_user("owner")
+    outsider = file_manager.create_user("outsider")
+    box = file_manager.create_box(owner.user_id, "private")
+
+    f1 = tmp_path / "f1.txt"
+    f1.write_text("data")
+
+    with pytest.raises(AccessDeniedError):
+        file_manager.add_files_bulk(outsider.user_id, box.box_id, [str(f1)])
+
+
+# ==============================================================================
+# Tests for delete_files_bulk (Lines 609-645)
+# ==============================================================================
+
+def test_delete_files_bulk_soft(file_manager: FileManager, tmp_path: Path) -> None:
+    """Cover delete_files_bulk: soft delete functionality."""
+    user = file_manager.create_user("deleter")
+    box = file_manager.create_box(user.user_id, "trash")
+
+    # Create 2 files
+    ids = []
+    for i in range(2):
+        p = tmp_path / f"del_{i}.txt"
+        p.write_bytes(b"data")  # 4 bytes
+        meta = file_manager.add_file(user.user_id, box.box_id, str(p))
+        ids.append(meta.file_id)
+
+    # Pre-check quota
+    assert file_manager.user_model.get(user.user_id)["used_bytes"] == 8
+
+    # Bulk Delete
+    count = file_manager.delete_files_bulk(ids, soft=True)
+
+    assert count == 2
+
+    # Verify status changed to 'deleted'
+    for fid in ids:
+        f = file_manager.file_model.get(fid)
+        assert f.status.value == "deleted"
+
+    # Verify quota freed
+    assert file_manager.user_model.get(user.user_id)["used_bytes"] == 0
+
+
+def test_delete_files_bulk_hard(file_manager: FileManager, tmp_path: Path) -> None:
+    """Cover delete_files_bulk: hard delete removes records."""
+    user = file_manager.create_user("hard_deleter")
+    box = file_manager.create_box(user.user_id, "trash")
+
+    p = tmp_path / "file.txt"
+    p.write_text("data")
+    meta = file_manager.add_file(user.user_id, box.box_id, str(p))
+
+    count = file_manager.delete_files_bulk([meta.file_id], soft=False)
+
+    assert count == 1
+    # Record should be gone
+    assert file_manager.file_model.get(meta.file_id) is None
+
+
+def test_delete_files_bulk_empty_or_missing(file_manager: FileManager) -> None:
+    """Cover edge cases: empty list or non-existent IDs."""
+    assert file_manager.delete_files_bulk([]) == 0
+    assert file_manager.delete_files_bulk(["non-existent-id"]) == 0
+
+
+# ==============================================================================
+# Bonus: Versioning Integration (Lines 299-300 approx)
+# ==============================================================================
+
+def test_file_version_restore_flow(file_manager: FileManager, tmp_path: Path) -> None:
+    """Cover list_file_versions and restore_file_version integration."""
+    user = file_manager.create_user("reverter")
+    box = file_manager.create_box(user.user_id, "rev_box")
+
+    # V1
+    p = tmp_path / "f.txt"
+    p.write_text("v1")
+    meta = file_manager.add_file(user.user_id, box.box_id, str(p))
+
+    # V2
+    p.write_text("v2")
+    file_manager.update_file(meta.file_id, str(p))
+
+    # List versions
+    versions = file_manager.list_file_versions(meta.file_id)
+    assert len(versions) == 1  # Contains V1 snapshot
+    v1_id = versions[0]["version_id"]
+
+    # Restore V1
+    file_manager.restore_file_version(meta.file_id, v1_id)
+
+    # Verify current state is V1 (size 2 bytes vs 2 bytes, but technically a restore logic check)
+    # Since we lack deep inspection of the version manager's restore logic here, 
+    # ensuring it runs without error covers the integration lines.
+    current = file_manager.get_file_metadata(meta.file_id)
+    assert current.version == 3  # Restore creates a new version
