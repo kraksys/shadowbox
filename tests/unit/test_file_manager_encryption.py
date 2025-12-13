@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from src.shadowbox.core.file_manager import FileManager
-from src.shadowbox.database.connection import DatabaseConnection
+from shadowbox.core.file_manager import FileManager
+from shadowbox.database.connection import DatabaseConnection
 
 
 def test_file_manager_encrypt_store_and_decrypt(tmp_path: Path) -> None:

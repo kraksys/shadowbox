@@ -22,8 +22,6 @@ from shadowbox.core.models import Box, BoxShare
 from shadowbox.core.storage import Storage
 from shadowbox.database.connection import DatabaseConnection
 
-sys.path.append(str(Path(__file__).resolve().parents[2] / "src"))
-
 
 @pytest.fixture()
 def file_manager(tmp_path: Path) -> FileManager:

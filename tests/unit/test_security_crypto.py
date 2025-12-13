@@ -2,8 +2,8 @@ import os
 import tempfile
 import struct
 
-from src.shadowbox.security.kdf import generate_salt, derive_master_key
-from src.shadowbox.security.crypto import encrypt_file_stream, decrypt_file_stream
+from shadowbox.security.kdf import generate_salt, derive_master_key
+from shadowbox.security.crypto import encrypt_file_stream, decrypt_file_stream
 
 
 def test_encrypt_decrypt_roundtrip(tmp_path):
