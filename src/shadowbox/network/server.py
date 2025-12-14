@@ -18,14 +18,9 @@ LAN file-sharing server:
     DELETE <filename>
     -> server deletes the file if exists and replies OK or ERROR
 
-    LIST_BOXES
-    -> sends a newline-separated list of available boxes for the user
-
     SHARE_BOX <box_name> <share_with_username> [permission]
     -> shares a box with another user
 
-    LIST_AVAILABLE_USERS
-    -> lists all users available for sharing
 
 server.py [shared_dir] [port]
 
@@ -167,13 +162,6 @@ def handle_client(conn, addr, context):
                     conn.sendall(msg.encode())
 
         elif line.upper().startswith("GET "):
-            # TODO: it needs to be able to get files from inside other directories and create the given directory
-            # I am not doing this before I talk with the db team about how to mange this
-            # so far it works if you only want to access the file and read for it
-            # example: python client.py [dir_name]/[nested_file] [name_of_file_to_be_stored]
-            # This will take the contents of the nested file and save them to a new file (IT CAN'T CREATE DIR).
-            # example WON'T WORK: python client.py [dir_name]/[nested_file]
-
             _, file_name = line.split(" ", 1)
             if context["mode"] == "test":
                 shared_dir = context["shared_dir"]
@@ -223,9 +211,6 @@ def handle_client(conn, addr, context):
             # No need to set filepath here; handled per-branch above
 
         elif line.upper().startswith("PUT "):
-            # IT WORKS!!!!!
-            # it can even create folders if the user gives a nested file name
-            # example: python client.py put file dir/nested_file
             parts = line.split(" ", 2)
             if len(parts) < 3:
                 conn.sendall(b"ERROR: PUT requires filename and size\n")
@@ -333,15 +318,6 @@ def handle_client(conn, addr, context):
 
         elif line.upper().startswith("DELETE "):
             _, file_name = line.split(" ", 1)
-
-            # TODO: either make a new option to delete directories or delete this, but maybe add a warning or something
-            # This can be turned back into an error
-            # if os.path.isdir(filepath):
-            #     msg = f"ERROR: Not a file: {file_name}\n"
-            #     conn.sendall(msg.encode())
-            #     print(f"DELETE failed, is a directory: {file_name}")
-            #     return
-
             if context["mode"] == "test":
                 shared_dir = context["shared_dir"]
                 filepath = os.path.join(shared_dir, file_name)
@@ -376,14 +352,6 @@ def handle_client(conn, addr, context):
                     msg = f"ERROR: File not found: {file_name}\n"
                     conn.sendall(msg.encode())
                     print(f"DELETE failed, not found: {file_name}")
-
-        elif line.upper() == "LIST_BOXES":
-            if context["mode"] == "core":
-                response = list_boxes(context["env"])
-                conn.sendall(response.encode())
-            else:
-                conn.sendall(b"ERROR: Command only available in core mode\n")
-
         elif line.upper().startswith("SHARE_BOX "):
             if context["mode"] == "core":
                 parts = line.strip().split(" ", 3)
@@ -399,13 +367,6 @@ def handle_client(conn, addr, context):
                         context["env"], box_name, share_with_user, permission
                     )  # look at this when calling share box and spinning up the server so we can avoid repetitions
                     conn.sendall(response.encode())
-            else:
-                conn.sendall(b"ERROR: Command only available in core mode\n")
-
-        elif line.upper() == "LIST_AVAILABLE_USERS":
-            if context["mode"] == "core":
-                response = list_available_users(context["env"])
-                conn.sendall(response.encode())
             else:
                 conn.sendall(b"ERROR: Command only available in core mode\n")
         elif line.upper() == "LIST_SHARED_BOXES":
