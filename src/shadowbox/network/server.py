@@ -33,6 +33,7 @@ import random
 import socket
 import string
 import threading
+import shutil
 
 from zeroconf import ServiceInfo, Zeroconf
 
@@ -67,6 +68,18 @@ def get_file_lock(path):
         return lock
 
 
+def delete_path(path: str) -> None:
+    """Recursively delete a file or directory tree at *path*."""
+    try:
+        if os.path.isdir(path):
+            shutil.rmtree(path)
+        elif os.path.exists(path):
+            os.remove(path)
+    except FileNotFoundError:
+        # If the path disappeared between checks, treat it as already deleted.
+        pass
+
+
 def get_local_ip():
     """A trick to get the current IP using a UDP socket."""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -86,7 +99,9 @@ def handle_client(conn, addr, context):
         10.0
     )  # The idea is to open a new connection for every action so 10s is enough
     
-    env = context["env"]
+    mode = context.get("mode", "core")
+    env = context.get("env")
+    shared_dir = context.get("shared_dir")
 
     try:
         data = b""
@@ -99,9 +114,24 @@ def handle_client(conn, addr, context):
         print(f"Received command: {line} from {addr}")
 
         if line.upper() == "LIST":
-            response = format_list(env)
-            conn.sendall(response.encode())
-            print("Sent file list")
+            if mode == "test":
+                root = shared_dir or "."
+                try:
+                    entries = sorted(os.listdir(root))
+                except Exception as e:
+                    msg = f"ERROR: Could not list directory: {e}\n"
+                    conn.sendall(msg.encode())
+                    print(msg.strip())
+                else:
+                    payload = "\n".join(entries)
+                    if entries:
+                        payload += "\n"
+                    conn.sendall(payload.encode())
+                    print(f"Sent test-mode file list from {root}")
+            else:
+                response = format_list(env)
+                conn.sendall(response.encode())
+                print("Sent file list")
 
         elif line.upper().startswith("BOX "):
             _, box_name = line.split(" ", 1)
