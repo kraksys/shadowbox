@@ -13,6 +13,7 @@ from typing import Iterable, Optional
 from textual import on
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
+from textual.screen import ModalScreen
 from textual.widgets import (
     Button,
     Checkbox,
@@ -26,14 +27,23 @@ from textual.widgets import (
     Static,
     Tree,
 )
-from textual.screen import ModalScreen
 
 from shadowbox.core.models import FileMetadata
-from shadowbox.frontend.cli.context import AppContext, build_context
 from shadowbox.database.search import fuzzy_search_fts, search_by_tag
-from shadowbox.network.client import get_server_address, connect_and_request, cmd_put, cmd_delete
-from shadowbox.network.server import give_code, start_tcp_server, stop_server, advertise_service
+from shadowbox.frontend.cli.context import AppContext, build_context
 from shadowbox.network.adapter import init_env, select_box, share_box
+from shadowbox.network.client import (
+    cmd_delete,
+    cmd_put,
+    connect_and_request,
+    get_server_address,
+)
+from shadowbox.network.server import (
+    advertise_service,
+    give_code,
+    start_tcp_server,
+    stop_server,
+)
 
 
 def _human_size(num: int) -> str:
@@ -156,7 +166,9 @@ class InitialSetupModal(ModalScreen[Optional[InitialSetupResult]]):
         with Vertical(classes="dialog"):
             yield Static("Initial Setup", classes="title")
             yield Label("Name for your first box")
-            self.box_input = Input(placeholder="wikibooks-en or default", value="default")
+            self.box_input = Input(
+                placeholder="wikibooks-en or default", value="default"
+            )
             yield self.box_input
             yield Label("Master key (optional - blank disables encryption)")
             self.master_input = Input(placeholder="••••••")
@@ -190,6 +202,7 @@ class InitialSetupModal(ModalScreen[Optional[InitialSetupResult]]):
 
 class LiveSearchResult:
     """Result from live search - selected box and file."""
+
     def __init__(self, box_id: str, file_id: str):
         self.box_id = box_id
         self.file_id = file_id
@@ -303,7 +316,11 @@ class LiveSearchScreen(ModalScreen[Optional[LiveSearchResult]]):
             for f in files:
                 size_str = _human_size(f.size)
                 file_node = box_node.add_leaf(f"{f.filename}  [dim]{size_str}[/dim]")
-                file_node.data = {"type": "file", "box_id": box_id, "file_id": f.file_id}
+                file_node.data = {
+                    "type": "file",
+                    "box_id": box_id,
+                    "file_id": f.file_id,
+                }
                 file_count += 1
 
         status.update(f"{file_count} file(s) in {len(by_box)} box(es)")
@@ -316,10 +333,12 @@ class LiveSearchScreen(ModalScreen[Optional[LiveSearchResult]]):
             return
 
         if node_data.get("type") == "file":
-            self.dismiss(LiveSearchResult(
-                box_id=node_data["box_id"],
-                file_id=node_data["file_id"],
-            ))
+            self.dismiss(
+                LiveSearchResult(
+                    box_id=node_data["box_id"],
+                    file_id=node_data["file_id"],
+                )
+            )
 
     def on_key(self, event) -> None:
         if event.key == "escape":
@@ -548,6 +567,7 @@ class BoxInfoModal(ModalScreen[None]):
 
 class ErrorModal(ModalScreen[None]):
     """Modal for displaying error messages prominently."""
+
     def __init__(self, title: str, message: str):
         super().__init__()
         self.error_title = title
@@ -570,6 +590,7 @@ class ErrorModal(ModalScreen[None]):
 
 class ShareBoxResult:
     """Result from the share modal - contains share type and write users."""
+
     def __init__(self, is_public: bool, write_usernames: list[str]):
         self.is_public = is_public
         self.write_usernames = write_usernames  # List of usernames with write access
@@ -577,6 +598,7 @@ class ShareBoxResult:
 
 class ShareBoxModal(ModalScreen[Optional[ShareBoxResult]]):
     """Modal to initiate sharing a box over LAN via mDNS."""
+
     def __init__(self, box_name: str):
         super().__init__()
         self.box_name = box_name
@@ -585,7 +607,9 @@ class ShareBoxModal(ModalScreen[Optional[ShareBoxResult]]):
         with Vertical(classes="dialog"):
             yield Static(f"Share Box: {self.box_name}", classes="title")
             yield Label("Share type:")
-            self.public_checkbox = Checkbox("Public (visible to everyone on LAN, read access)")
+            self.public_checkbox = Checkbox(
+                "Public (visible to everyone on LAN, read access)"
+            )
             yield self.public_checkbox
             yield Label("Users with WRITE permission (comma-separated):")
             self.write_users_input = Input(placeholder="alice, bob, charlie")
@@ -601,10 +625,11 @@ class ShareBoxModal(ModalScreen[Optional[ShareBoxResult]]):
         # Parse comma-separated usernames
         raw = self.write_users_input.value.strip()
         write_usernames = [u.strip() for u in raw.split(",") if u.strip()]
-        self.dismiss(ShareBoxResult(
-            is_public=self.public_checkbox.value,
-            write_usernames=write_usernames
-        ))
+        self.dismiss(
+            ShareBoxResult(
+                is_public=self.public_checkbox.value, write_usernames=write_usernames
+            )
+        )
 
     def on_button_pressed(self, event: Button.Pressed) -> None:  # pragma: no cover
         if event.button.id == "cancel":
@@ -621,7 +646,15 @@ class ShareBoxModal(ModalScreen[Optional[ShareBoxResult]]):
 
 class ShareCodeModal(ModalScreen[None]):
     """Modal displaying the generated share code with copy functionality."""
-    def __init__(self, code: str, box_name: str, write_usernames: list[str], owner: str, is_public: bool = False):
+
+    def __init__(
+        self,
+        code: str,
+        box_name: str,
+        write_usernames: list[str],
+        owner: str,
+        is_public: bool = False,
+    ):
         super().__init__()
         self.code = code
         self.box_name = box_name
@@ -710,12 +743,14 @@ class EditFileModal(ModalScreen[Optional[EditFileResult]]):
 
 class ConnectResult:
     """Result from connect modal - the 4-letter code entered."""
+
     def __init__(self, code: str):
         self.code = code
 
 
 class ConnectModal(ModalScreen[Optional[ConnectResult]]):
     """Modal to enter a 4-letter share code to connect to a remote box."""
+
     def compose(self) -> ComposeResult:  # pragma: no cover
         with Vertical(classes="dialog"):
             yield Static("Connect to Shared Box", classes="title")
@@ -754,6 +789,7 @@ class ConnectModal(ModalScreen[Optional[ConnectResult]]):
 
 class ConnectSuccessModal(ModalScreen[None]):
     """Modal showing successful connection to a remote box."""
+
     def __init__(self, code: str, ip: str, port: int, files_preview: str):
         super().__init__()
         self.code = code
@@ -879,9 +915,7 @@ class ShadowBoxApp(App):
                 self._handle_initial_setup,
             )
 
-    def _handle_initial_setup(
-        self, result: Optional["InitialSetupResult"]
-    ) -> None:
+    def _handle_initial_setup(self, result: Optional["InitialSetupResult"]) -> None:
         """
         Handle the first-run setup flow:
 
@@ -988,7 +1022,9 @@ class ShadowBoxApp(App):
             # Local shared boxes (from database)
             for box in shared_boxes:
                 perm = self._get_box_permission(box)
-                perm_indicator = {"read": "R", "write": "W", "admin": "A"}.get(perm, "R")
+                perm_indicator = {"read": "R", "write": "W", "admin": "A"}.get(
+                    perm, "R"
+                )
                 item = ListItem(Static(f"[{perm_indicator}] {box.box_name}"))
                 item.data = box
                 self.shared_boxes.append(item)
@@ -1093,7 +1129,9 @@ class ShadowBoxApp(App):
             self.active_box_permission = self._get_box_permission(data)
             self.refresh_files()
 
-    def _show_remote_box_files(self, remote_info: dict, show_modal: bool = False) -> None:
+    def _show_remote_box_files(
+        self, remote_info: dict, show_modal: bool = False
+    ) -> None:
         """Fetch and display files from a remote connected box (non-blocking).
 
         Args:
@@ -1111,11 +1149,15 @@ class ShadowBoxApp(App):
             thread=True,
         )
 
-    def _fetch_remote_files_worker(self, ip: str, port: int, code: str, show_modal: bool = False) -> dict:
+    def _fetch_remote_files_worker(
+        self, ip: str, port: int, code: str, show_modal: bool = False
+    ) -> dict:
         """Worker that fetches remote files (runs in thread)."""
         try:
             res = connect_and_request(ip, port, "LIST", timeout=5)
-            files_text = res.get("text", "").strip() if isinstance(res, dict) else str(res)
+            files_text = (
+                res.get("text", "").strip() if isinstance(res, dict) else str(res)
+            )
             return {
                 "success": True,
                 "code": code,
@@ -1135,6 +1177,7 @@ class ShadowBoxApp(App):
         Returns list of dicts with keys: file_id, filename, size, tags, status
         """
         import re
+
         files: list[dict] = []
         if not files_text:
             return files
@@ -1152,7 +1195,7 @@ class ShadowBoxApp(App):
                 continue
 
             # Try to parse new format: "file_id: {Filename: ..., Size: ..., Tags: ..., Status: ...}"
-            match = re.match(r'^([^:]+):\s*\{(.+)\}$', entry)
+            match = re.match(r"^([^:]+):\s*\{(.+)\}$", entry)
             if match:
                 file_id = match.group(1).strip()
                 props_str = match.group(2)
@@ -1165,12 +1208,12 @@ class ShadowBoxApp(App):
                 modified_at = ""
 
                 # Parse Filename
-                fn_match = re.search(r'Filename:\s*([^,]+?)(?:,|$)', props_str)
+                fn_match = re.search(r"Filename:\s*([^,]+?)(?:,|$)", props_str)
                 if fn_match:
                     filename = fn_match.group(1).strip()
 
                 # Parse Size
-                size_match = re.search(r'Size:\s*(\d+)', props_str)
+                size_match = re.search(r"Size:\s*(\d+)", props_str)
                 if size_match:
                     size = int(size_match.group(1))
 
@@ -1183,23 +1226,25 @@ class ShadowBoxApp(App):
                         tags = re.findall(r"'([^']*)'", tags_content)
 
                 # Parse Status
-                status_match = re.search(r'Status:\s*(\w+)', props_str)
+                status_match = re.search(r"Status:\s*(\w+)", props_str)
                 if status_match:
                     status = status_match.group(1).strip()
 
                 # Parse Modified - format is Modified: 2024-01-15T10:30:00 or datetime object str
-                modified_match = re.search(r'Modified:\s*([^,}]+)', props_str)
+                modified_match = re.search(r"Modified:\s*([^,}]+)", props_str)
                 if modified_match:
                     modified_at = modified_match.group(1).strip()
 
-                files.append({
-                    "file_id": file_id,
-                    "filename": filename,
-                    "size": size,
-                    "tags": tags,
-                    "status": status,
-                    "modified_at": modified_at,
-                })
+                files.append(
+                    {
+                        "file_id": file_id,
+                        "filename": filename,
+                        "size": size,
+                        "tags": tags,
+                        "status": status,
+                        "modified_at": modified_at,
+                    }
+                )
             else:
                 # Fallback: try old format "filename: size"
                 if ": " in entry:
@@ -1208,32 +1253,38 @@ class ShadowBoxApp(App):
                         filename = parts[0]
                         try:
                             size = int(parts[1])
-                            files.append({
-                                "file_id": filename,
-                                "filename": filename,
-                                "size": size,
-                                "tags": [],
-                                "status": "remote",
-                                "modified_at": "",
-                            })
+                            files.append(
+                                {
+                                    "file_id": filename,
+                                    "filename": filename,
+                                    "size": size,
+                                    "tags": [],
+                                    "status": "remote",
+                                    "modified_at": "",
+                                }
+                            )
                         except ValueError:
-                            files.append({
-                                "file_id": entry,
-                                "filename": entry,
-                                "size": 0,
-                                "tags": [],
-                                "status": "remote",
-                                "modified_at": "",
-                            })
+                            files.append(
+                                {
+                                    "file_id": entry,
+                                    "filename": entry,
+                                    "size": 0,
+                                    "tags": [],
+                                    "status": "remote",
+                                    "modified_at": "",
+                                }
+                            )
                 else:
-                    files.append({
-                        "file_id": entry,
-                        "filename": entry,
-                        "size": 0,
-                        "tags": [],
-                        "status": "remote",
-                        "modified_at": "",
-                    })
+                    files.append(
+                        {
+                            "file_id": entry,
+                            "filename": entry,
+                            "size": 0,
+                            "tags": [],
+                            "status": "remote",
+                            "modified_at": "",
+                        }
+                    )
         return files
 
     def _populate_remote_files(self, files: list[dict]) -> None:
@@ -1317,7 +1368,9 @@ class ShadowBoxApp(App):
             self._set_status("Create a box first")
             return
         if not self._has_write_permission():
-            self._set_status(f"No write permission (current: {self.active_box_permission})")
+            self._set_status(
+                f"No write permission (current: {self.active_box_permission})"
+            )
             return
         self._set_status("Adding file...")
         self.push_screen(
@@ -1370,9 +1423,19 @@ class ShadowBoxApp(App):
         self._set_status("Downloading...")
         if self.viewing_remote:
             # For remote files, file_id is actually the filename
-            self.push_screen(DownloadModal(), lambda res: self._handle_remote_download(res, file_id))
+            if not self.table or self.table.cursor_row is None:
+                self._set_status("Select a file first")
+                return
+            filename = self.table.get_row_at(self.table.cursor_row)[0]
+            self.push_screen(
+                DownloadModal(),
+                lambda res: self._handle_remote_download(res, filename),
+            )
         else:
-            self.push_screen(DownloadModal(), lambda res: self._handle_download(res, file_id))
+            self.push_screen(
+                DownloadModal(),
+                lambda res: self._handle_download(res, file_id),
+            )
 
     def _handle_download(
         self, result: Optional["DownloadResult"], file_id: str
@@ -1385,7 +1448,9 @@ class ShadowBoxApp(App):
         except Exception as exc:  # pragma: no cover - UI-only
             self._set_status(f"Download failed: {exc}")
 
-    def _handle_remote_download(self, result: Optional["DownloadResult"], filename: str) -> None:
+    def _handle_remote_download(
+        self, result: Optional["DownloadResult"], filename: str
+    ) -> None:
         if not result or not self.active_remote_box:
             return
         ip = self.active_remote_box["ip"]
@@ -1398,17 +1463,28 @@ class ShadowBoxApp(App):
             thread=True,
         )
 
-    def _remote_download_worker(self, ip: str, port: int, filename: str, dest_path: str) -> dict:
+    def _remote_download_worker(
+        self, ip: str, port: int, filename: str, dest_path: str
+    ) -> dict:
         """Worker that downloads a file from a remote box."""
         try:
-            res = connect_and_request(ip, port, f"GET {filename}", timeout=30)
+            # Stream bytes to dest path using network client's file mode
+            res = connect_and_request(
+                ip,
+                port,
+                f"GET {filename}",
+                recv_file=True,
+                out_path=dest_path,
+                timeout=30,
+            )
             if isinstance(res, dict) and res.get("status") == "ok":
-                data = res.get("data", b"")
-                with open(dest_path, "wb") as f:
-                    f.write(data if isinstance(data, bytes) else data.encode())
                 return {"success": True, "dest": dest_path, "filename": filename}
             else:
-                error = res.get("error", "Unknown error") if isinstance(res, dict) else str(res)
+                error = (
+                    res.get("error", "Unknown error")
+                    if isinstance(res, dict)
+                    else str(res)
+                )
                 return {"success": False, "error": error}
         except Exception as exc:
             return {"success": False, "error": str(exc)}
@@ -1420,7 +1496,11 @@ class ShadowBoxApp(App):
             if isinstance(res, dict) and res.get("status") == "ok":
                 return {"success": True, "path": local_path}
             else:
-                error = res.get("error", res.get("reply", "Unknown error")) if isinstance(res, dict) else str(res)
+                error = (
+                    res.get("error", res.get("reply", "Unknown error"))
+                    if isinstance(res, dict)
+                    else str(res)
+                )
                 return {"success": False, "error": error}
         except Exception as exc:
             return {"success": False, "error": str(exc)}
@@ -1435,14 +1515,20 @@ class ShadowBoxApp(App):
                     return {"success": False, "error": text}
                 return {"success": True, "filename": filename}
             else:
-                error = res.get("error", "Unknown error") if isinstance(res, dict) else str(res)
+                error = (
+                    res.get("error", "Unknown error")
+                    if isinstance(res, dict)
+                    else str(res)
+                )
                 return {"success": False, "error": error}
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
     def action_delete_file(self) -> None:
         if not self._has_write_permission():
-            self._set_status(f"No write permission (current: {self.active_box_permission})")
+            self._set_status(
+                f"No write permission (current: {self.active_box_permission})"
+            )
             return
         file_id = self._selected_file_id()
         if not file_id:
@@ -1451,10 +1537,13 @@ class ShadowBoxApp(App):
         filename = self.table.get_row_at(self.table.cursor_row)[0] if self.table else ""
         prompt = f"Delete file '{filename}'?"
         self.push_screen(
-            DeleteConfirmModal(prompt), lambda ok: self._handle_delete_file(ok, file_id, filename)
+            DeleteConfirmModal(prompt),
+            lambda ok: self._handle_delete_file(ok, file_id, filename),
         )
 
-    def _handle_delete_file(self, confirmed: bool, file_id: str, filename: str = "") -> None:
+    def _handle_delete_file(
+        self, confirmed: bool, file_id: str, filename: str = ""
+    ) -> None:
         if not confirmed:
             return
         # Remote box: delete via network
@@ -1645,8 +1734,7 @@ class ShadowBoxApp(App):
             self.notify("Share already in progress", severity="warning")
             return
         self.push_screen(
-            ShareBoxModal(self.ctx.active_box.box_name),
-            self._handle_share_box
+            ShareBoxModal(self.ctx.active_box.box_name), self._handle_share_box
         )
 
     def _handle_share_box(self, result: Optional["ShareBoxResult"]) -> None:
@@ -1667,12 +1755,16 @@ class ShadowBoxApp(App):
             thread=True,
         )
 
-    def _do_share_worker(self, box_id: str, box_name: str, result: "ShareBoxResult", username: str) -> dict:
+    def _do_share_worker(
+        self, box_id: str, box_name: str, result: "ShareBoxResult", username: str
+    ) -> dict:
         """Worker that does the actual server startup and mDNS registration (runs in thread)."""
         try:
             # Generate 4-letter code for private, empty for public (uses base service type)
             if result.is_public:
-                code = ""  # Empty = base _shadowbox._tcp.local. (one public box per user)
+                code = (
+                    ""  # Empty = base _shadowbox._tcp.local. (one public box per user)
+                )
             else:
                 code = give_code()
 
@@ -1681,8 +1773,18 @@ class ShadowBoxApp(App):
 
             # Create server environment using the TUI's database
             db_path = str(self.ctx.fm.db.db_path)
-            storage_root = str(self.ctx.fm.storage.root) if hasattr(self.ctx.fm.storage, 'root') else None
-            env = init_env(db_path=db_path, storage_root=storage_root, username=username)
+            storage_root = (
+                str(self.ctx.fm.storage.root)
+                if hasattr(self.ctx.fm.storage, "root")
+                else None
+            )
+            # reuse FileManager Storage so encryption keys are available inside the sharing server env
+            env = init_env(
+                db_path=db_path,
+                storage_root=storage_root,
+                username=username,
+                storage=self.ctx.fm.storage,
+            )
             select_box(env, box_name)
 
             # Create share records for each write user BEFORE starting server
@@ -1690,7 +1792,9 @@ class ShadowBoxApp(App):
             share_errors = []
             for write_user in result.write_usernames:
                 # Create user if doesn't exist by calling init_env with their username
-                init_env(db_path=db_path, storage_root=storage_root, username=write_user)
+                init_env(
+                    db_path=db_path, storage_root=storage_root, username=write_user
+                )
                 # Now share the box with them
                 share_result = share_box(env, box_name, write_user, "write")
                 if share_result.startswith("ERROR"):
@@ -1699,7 +1803,9 @@ class ShadowBoxApp(App):
             context = {"mode": "core", "env": env}
 
             # Advertise the service
-            server_name = f"FileServer-{username}" if result.is_public else f"FileServer-{code}"
+            server_name = (
+                f"FileServer-{username}" if result.is_public else f"FileServer-{code}"
+            )
             zeroconf, info = advertise_service(server_name, 9999, service_type)
 
             # Create stop event for this server
@@ -1782,7 +1888,9 @@ class ShadowBoxApp(App):
 
             # Try to connect and list files
             res = connect_and_request(ip, port, "LIST")
-            files_text = res.get("text", "").strip() if isinstance(res, dict) else str(res)
+            files_text = (
+                res.get("text", "").strip() if isinstance(res, dict) else str(res)
+            )
 
             return {
                 "success": True,
@@ -1797,7 +1905,9 @@ class ShadowBoxApp(App):
     # Edit file metadata (tags + description)
     def action_edit_file(self) -> None:
         if not self._has_write_permission():
-            self._set_status(f"No write permission (current: {self.active_box_permission})")
+            self._set_status(
+                f"No write permission (current: {self.active_box_permission})"
+            )
             return
         file_id = self._selected_file_id()
         if not file_id:
@@ -1913,7 +2023,8 @@ class ShadowBoxApp(App):
         """Worker that does the actual discovery (runs in thread)."""
         import socket
         import time
-        from zeroconf import Zeroconf, ServiceBrowser, ServiceListener
+
+        from zeroconf import ServiceBrowser, ServiceListener, Zeroconf
 
         discovered: dict[str, dict] = {}
         base_service_type = "_shadowbox._tcp.local."
@@ -1922,7 +2033,9 @@ class ShadowBoxApp(App):
             zc = Zeroconf()
 
             class Listener(ServiceListener):
-                def add_service(self, zeroconf: Zeroconf, type_: str, name: str) -> None:
+                def add_service(
+                    self, zeroconf: Zeroconf, type_: str, name: str
+                ) -> None:
                     # All services on base _shadowbox._tcp.local. are public
                     info = zeroconf.get_service_info(type_, name, timeout=1000)
                     if info and info.addresses:
@@ -1934,7 +2047,11 @@ class ShadowBoxApp(App):
                         if ip:
                             # Extract username from "FileServer-{username}._shadowbox._tcp.local."
                             owner = name.split(".")[0].replace("FileServer-", "")
-                            discovered[name] = {"name": owner, "ip": ip, "port": info.port}
+                            discovered[name] = {
+                                "name": owner,
+                                "ip": ip,
+                                "port": info.port,
+                            }
 
                 def remove_service(self, _zc: Zeroconf, _type: str, _name: str) -> None:
                     pass
@@ -1988,17 +2105,23 @@ class ShadowBoxApp(App):
                     self.notify("Box is now public on LAN", title="Shared")
 
                 # Show the share code modal (for both public and private)
-                self.push_screen(ShareCodeModal(
-                    code=result["code"],
-                    box_name=result["box_name"],
-                    write_usernames=result.get("write_usernames", []),
-                    owner=result["username"],
-                    is_public=result["is_public"],
-                ))
+                self.push_screen(
+                    ShareCodeModal(
+                        code=result["code"],
+                        box_name=result["box_name"],
+                        write_usernames=result.get("write_usernames", []),
+                        owner=result["username"],
+                        is_public=result["is_public"],
+                    )
+                )
             else:
                 self.pending_shares.discard(result.get("box_id", ""))
                 self.refresh_boxes()
-                self.notify(f"Share failed: {result.get('error')}", title="Error", severity="error")
+                self.notify(
+                    f"Share failed: {result.get('error')}",
+                    title="Error",
+                    severity="error",
+                )
 
         # Handle connect worker completion
         elif worker_name == "connect_worker" and result:
@@ -2013,20 +2136,30 @@ class ShadowBoxApp(App):
                 }
                 self._set_status(f"Connected to {code}")
                 self.refresh_boxes()
-                self.push_screen(ConnectSuccessModal(
-                    code=code,
-                    ip=result["ip"],
-                    port=result["port"],
-                    files_preview=result["files_preview"],
-                ))
+                self.push_screen(
+                    ConnectSuccessModal(
+                        code=code,
+                        ip=result["ip"],
+                        port=result["port"],
+                        files_preview=result["files_preview"],
+                    )
+                )
             else:
                 error = result.get("error", "unknown")
                 if error == "not_found":
-                    self.notify(f"No share found with code: {result['code']}", title="Not Found", severity="warning")
+                    self.notify(
+                        f"No share found with code: {result['code']}",
+                        title="Not Found",
+                        severity="warning",
+                    )
                 elif error == "no_ip":
-                    self.notify("Could not resolve address", title="Error", severity="error")
+                    self.notify(
+                        "Could not resolve address", title="Error", severity="error"
+                    )
                 else:
-                    self.notify(f"Connection failed: {error}", title="Error", severity="error")
+                    self.notify(
+                        f"Connection failed: {error}", title="Error", severity="error"
+                    )
                 self._set_status("Connection failed")
 
         # Handle fetch remote files worker completion
@@ -2038,12 +2171,14 @@ class ShadowBoxApp(App):
                 self._populate_remote_files(parsed_files)
                 # Only show modal on first connect or when box info is requested
                 if result.get("show_modal"):
-                    self.push_screen(ConnectSuccessModal(
-                        code=result["code"],
-                        ip=result["ip"],
-                        port=result["port"],
-                        files_preview=result["files_preview"],
-                    ))
+                    self.push_screen(
+                        ConnectSuccessModal(
+                            code=result["code"],
+                            ip=result["ip"],
+                            port=result["port"],
+                            files_preview=result["files_preview"],
+                        )
+                    )
             else:
                 self._set_status(f"Failed to fetch files: {result.get('error')}")
 
@@ -2060,7 +2195,9 @@ class ShadowBoxApp(App):
                 self._set_status(f"Uploaded {result['path']}")
                 # Refresh the remote file list
                 if self.active_remote_box:
-                    self._show_remote_box_files(self.active_remote_box, show_modal=False)
+                    self._show_remote_box_files(
+                        self.active_remote_box, show_modal=False
+                    )
             else:
                 self._set_status(f"Upload failed: {result.get('error')}")
 
@@ -2070,7 +2207,9 @@ class ShadowBoxApp(App):
                 self._set_status(f"Deleted {result['filename']}")
                 # Refresh the remote file list
                 if self.active_remote_box:
-                    self._show_remote_box_files(self.active_remote_box, show_modal=False)
+                    self._show_remote_box_files(
+                        self.active_remote_box, show_modal=False
+                    )
             else:
                 self._set_status(f"Delete failed: {result.get('error')}")
 
