@@ -1,9 +1,6 @@
-"""Convenience entry point to run the ShadowBox TUI app.
-
-Allows starting the application with `python main.py` from the project root.
 """
-
-from __future__ import annotations
+Entry point to run the ShadowBox TUI app.
+"""
 
 import sys
 from pathlib import Path
@@ -24,4 +21,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
