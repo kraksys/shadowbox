@@ -1093,6 +1093,8 @@ class ShadowBoxApp(App):
         self._update_status()
 
     def action_refresh(self) -> None:
+        # Trigger a fresh discovery of public LAN boxes as well as local/shared ones.
+        self._discover_public_boxes()
         self.refresh_boxes()
         self.refresh_files()
 
