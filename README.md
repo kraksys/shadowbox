@@ -294,9 +294,10 @@ For detailed technical documentation, see the state machine diagrams in the `doc
 - [Encryption State Machine](docs/EncryptionStateMachineDiagram.png) - Cryptographic key lifecycle
 
 # Authors
-Stavros Valsamis, Maxim Dmitrievich, Matthieu Klopp, Atanas Malinkov, Patrik Levak & Ahmed Al Kurwi.
+Stavros Valsamis, Maksim Rogov, Matthieu Klopp, Atanas Malinkov, Patrik Levak & Ahmed Al Kurwi.
 
 Software Development Course (Fall/Winter 2025)
+
 
 
 
