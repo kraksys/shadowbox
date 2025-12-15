@@ -5,9 +5,8 @@ Start here with `python -m shadowbox.frontend.cli.app`
 
 from __future__ import annotations
 
-import subprocess
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Iterable, Optional
 
 from textual import on
@@ -28,10 +27,13 @@ from textual.widgets import (
     Tree,
 )
 
-from shadowbox.core.models import FileMetadata
-from shadowbox.database.search import fuzzy_search_fts, search_by_tag
+from shadowbox.core.models import BoxShare, FileMetadata
+from shadowbox.database.models import BoxModel, BoxShareModel
+from shadowbox.database.models import row_to_metadata
+from shadowbox.database.search import fuzzy_search_fts, search_by_tag, tags_map
+from shadowbox.frontend.cli.clipboard import copy_to_clipboard
 from shadowbox.frontend.cli.context import AppContext, build_context
-from shadowbox.network.adapter import init_env, select_box, share_box
+from shadowbox.network.adapter import init_env, select_box
 from shadowbox.network.client import (
     cmd_delete,
     cmd_put,
@@ -247,8 +249,7 @@ class LiveSearchScreen(ModalScreen[Optional[LiveSearchResult]]):
         """Pre-load box names for display."""
         try:
             user_boxes = self.ctx.fm.list_user_boxes(self.ctx.user.user_id)
-            shared_boxes = self.ctx.fm.list_shared_boxes(self.ctx.user.user_id)
-            for box in user_boxes + shared_boxes:
+            for box in user_boxes:
                 self._box_names[box.box_id] = box.box_name
         except Exception:
             pass
@@ -272,6 +273,51 @@ class LiveSearchScreen(ModalScreen[Optional[LiveSearchResult]]):
             self._debounce_timer.stop()
         self._debounce_timer = self.set_timer(0.15, self._do_search)
 
+    def _search_accessible_files(self, term: str, limit: int = 100):
+        """Search files in all accessible boxes (owned + shared).
+        
+        Unlike fuzzy_search_fts which only searches user's own files,
+        this includes files from boxes shared with the user.
+        """
+        # Build prefix-match tokens for FTS
+        tokens = [t for t in term.strip().split() if t]
+        if not tokens:
+            return []
+        fts_query = " ".join(t + "*" for t in tokens)
+        
+        user_id = self.ctx.user.user_id
+        
+        # Query that searches files the user can access:
+        # - Files in boxes owned by the user, OR
+        # - Files in boxes shared with the user (non-expired)
+        sql = """
+            SELECT DISTINCT f.*, bm25(files_fts) AS rank
+            FROM files_fts
+            JOIN files f ON f.file_id = files_fts.file_id
+            JOIN boxes b ON f.box_id = b.box_id
+            LEFT JOIN box_shares bs 
+                ON bs.box_id = b.box_id 
+                AND bs.shared_with_user_id = ?
+            WHERE files_fts MATCH ?
+              AND f.status != 'deleted'
+              AND (
+                  b.user_id = ? 
+                  OR (
+                      bs.share_id IS NOT NULL 
+                      AND (bs.expires_at IS NULL OR bs.expires_at > CURRENT_TIMESTAMP)
+                  )
+              )
+            ORDER BY rank
+            LIMIT ?
+        """
+        
+        rows = self.ctx.db.fetch_all(sql, (user_id, fts_query, user_id, limit))
+        
+        # Convert rows to FileMetadata with tags
+        file_ids = [r["file_id"] for r in rows]
+        tm = tags_map(self.ctx.db, file_ids)
+        return [row_to_metadata(r, tm.get(r["file_id"], [])) for r in rows]
+
     def _do_search(self) -> None:
         """Execute search and update tree."""
         query = self.query_one("#search-input", Input).value.strip()
@@ -285,12 +331,8 @@ class LiveSearchScreen(ModalScreen[Optional[LiveSearchResult]]):
             return
 
         try:
-            hits = fuzzy_search_fts(
-                self.ctx.db,
-                query,
-                user_id=self.ctx.user.user_id,
-                limit=100,
-            )
+            # Search files in all accessible boxes (owned + shared)
+            hits = self._search_accessible_files(query, limit=100)
         except Exception as exc:
             status.update(f"Search error: {exc}")
             return
@@ -536,6 +578,61 @@ class DeleteConfirmModal(ModalScreen[Optional[bool]]):
             self.dismiss(True)
 
 
+class AlertModal(ModalScreen[None]):
+    """Simple alert modal with a title, message, and OK button."""
+
+    def __init__(self, title: str, message: str):
+        super().__init__()
+        self.alert_title = title
+        self.alert_message = message
+
+    def compose(self) -> ComposeResult:  # pragma: no cover
+        with Vertical(classes="dialog"):
+            yield Static(self.alert_title, classes="title")
+            yield Static("")
+            yield Static(self.alert_message)
+            yield Static("")
+            with Horizontal():
+                yield Button("OK", id="ok", variant="primary")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:  # pragma: no cover
+        self.dismiss(None)
+
+    def on_key(self, event) -> None:  # pragma: no cover
+        if event.key in ("escape", "enter"):
+            self.dismiss(None)
+
+
+class ReplaceShareConfirmModal(ModalScreen[Optional[bool]]):
+    """Confirmation modal for replacing an existing share."""
+
+    def __init__(self, current_box_name: str, new_box_name: str):
+        super().__init__()
+        self.current_box_name = current_box_name
+        self.new_box_name = new_box_name
+
+    def compose(self) -> ComposeResult:  # pragma: no cover
+        with Vertical(classes="dialog"):
+            yield Static("Only one box can be shared at a time", classes="title")
+            yield Static("")
+            yield Static(f"Currently sharing: {self.current_box_name}")
+            yield Static(f"New share: {self.new_box_name}")
+            yield Static("")
+            yield Static("Stop current share and start new one?")
+            with Horizontal():
+                yield Button("Cancel", id="cancel")
+                yield Button("Replace", id="ok", variant="warning")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:  # pragma: no cover
+        self.dismiss(event.button.id == "ok")
+
+    def on_key(self, event) -> None:  # pragma: no cover
+        if event.key == "escape":
+            self.dismiss(False)
+        elif event.key == "enter":
+            self.dismiss(True)
+
+
 class BoxInfoModal(ModalScreen[None]):
     def __init__(self, box, info):
         super().__init__()
@@ -687,7 +784,7 @@ class ShareCodeModal(ModalScreen[None]):
     def on_button_pressed(self, event: Button.Pressed) -> None:  # pragma: no cover
         if event.button.id == "copy":
             try:
-                subprocess.run(["pbcopy"], input=self.code.encode(), check=True)
+                copy_to_clipboard(self.code)
                 self.notify("Code copied to clipboard!")
             except Exception:
                 self.notify("Could not copy to clipboard", severity="error")
@@ -695,7 +792,15 @@ class ShareCodeModal(ModalScreen[None]):
             self.dismiss(None)
 
     def on_key(self, event) -> None:  # pragma: no cover
-        if event.key in ("escape", "enter"):
+        if event.key == "enter":
+            if self.code:
+                try:
+                    copy_to_clipboard(self.code)
+                    self.notify("Code copied to clipboard!")
+                except Exception:
+                    self.notify("Could not copy to clipboard", severity="error")
+            self.dismiss(None)
+        elif event.key == "escape":
             self.dismiss(None)
 
 
@@ -836,9 +941,7 @@ class ShadowBoxApp(App):
         ("q", "quit", "Quit"),
         ("r", "refresh", "Refresh"),
         ("a", "add_file", "Add"),
-        # Use 'g' as a reliable key to download the currently selected file.
         ("g", "download", "Download"),
-        ("enter", "download", "Download"),
         ("d", "delete_file", "Delete"),
         ("/", "search", "Search"),
         ("n", "new_box", "New Box"),
@@ -862,7 +965,8 @@ class ShadowBoxApp(App):
         self.table: DataTable | None = None
         self.status: Static | None = None
         self.row_keys: list[str] = []
-        # Track active shares: box_id -> (zeroconf, info, code, is_public, stop_event)
+        # Track active shares: box_id -> (zeroconf, info, code, is_public, stop_event, granted_user_ids)
+        # granted_user_ids is a set of user_ids that were granted access during this session
         self.active_shares: dict[str, tuple] = {}
         # Track boxes currently being set up for sharing (loading state)
         self.pending_shares: set[str] = set()
@@ -907,6 +1011,10 @@ class ShadowBoxApp(App):
         # Discover public boxes immediately, then every 10 seconds
         self._discover_public_boxes()
         self.set_interval(10.0, self._discover_public_boxes)
+        # Check connected box liveness every 30 seconds
+        self.set_interval(30.0, self._check_connected_box_liveness)
+        # extend share TTL every 3 seconds (shares expire after 10s without)
+        self.set_interval(3.0, self._extend_share_expiration)
 
         # First-run setup: prompt for initial box and optional master key.
         if getattr(self.ctx, "first_run", False):
@@ -980,14 +1088,8 @@ class ShadowBoxApp(App):
             self._set_status("Initial setup did not create a box")
             return
 
-        # Finalize: set active box, remember it, and refresh UI.
+        # Finalize: set active box and refresh UI.
         self.ctx.active_box = box
-        try:
-            self._persist_last_box(box.box_id)
-        except Exception:
-            # Persisting last box is best-effort; failures should not block usage.
-            pass
-
         self.refresh_boxes()
         self.refresh_files()
         self._set_status(f"Ready - active box: {box.box_name}")
@@ -999,7 +1101,6 @@ class ShadowBoxApp(App):
             self.shared_boxes.clear()
         try:
             user_boxes = self.ctx.fm.list_user_boxes(self.ctx.user.user_id)
-            shared_boxes = self.ctx.fm.list_shared_boxes(self.ctx.user.user_id)
         except Exception as exc:  # pragma: no cover - UI only
             self._set_status(f"Error loading boxes: {exc}")
             return
@@ -1009,7 +1110,7 @@ class ShadowBoxApp(App):
             if box.box_id in self.pending_shares:
                 indicator = r"\[...] "  # Loading/pending
             elif box.box_id in self.active_shares:
-                _, _, code, is_public, _ = self.active_shares[box.box_id]
+                _, _, code, is_public, _, _ = self.active_shares[box.box_id]
                 indicator = r"\[P] " if is_public else f"\\[S:{code}] "
             else:
                 indicator = ""
@@ -1018,17 +1119,8 @@ class ShadowBoxApp(App):
             self.boxes.append(item)
         self.boxes.refresh()
 
+        # Shared boxes: only show session-based remote connections (via code)
         if self.shared_boxes is not None:
-            # Local shared boxes (from database)
-            for box in shared_boxes:
-                perm = self._get_box_permission(box)
-                perm_indicator = {"read": "R", "write": "W", "admin": "A"}.get(
-                    perm, "R"
-                )
-                item = ListItem(Static(f"[{perm_indicator}] {box.box_name}"))
-                item.data = box
-                self.shared_boxes.append(item)
-            # Remote connected boxes (via mDNS code)
             for code, info in self.connected_boxes.items():
                 display = f"{info['name']} @ {info['ip']}"
                 item = ListItem(Static(display))
@@ -1045,15 +1137,6 @@ class ShadowBoxApp(App):
                 ):
                     self.boxes.index = idx
                     break
-            if self.shared_boxes:
-                if self.ctx.active_box.user_id != self.ctx.user.user_id:
-                    for idx, item in enumerate(self.shared_boxes.children):
-                        if (
-                            getattr(item, "data", None)
-                            and item.data.box_id == self.ctx.active_box.box_id
-                        ):
-                            self.shared_boxes.index = idx
-                            break
 
     def refresh_files(self) -> None:
         assert self.table is not None
@@ -1093,15 +1176,25 @@ class ShadowBoxApp(App):
         self._update_status()
 
     def action_refresh(self) -> None:
-        # Trigger a fresh discovery of public LAN boxes as well as local/shared ones.
+        # Trigger fresh discovery and liveness checks for all box sections
         self._discover_public_boxes()
+        self._check_connected_box_liveness()
         self.refresh_boxes()
         self.refresh_files()
+
+    def _clear_other_list_selections(self, active_list: ListView) -> None:
+        """Clear selection highlight in all ListViews except the active one."""
+        all_lists = [self.boxes, self.shared_boxes, self.public_boxes]
+        for lv in all_lists:
+            if lv is not None and lv is not active_list:
+                lv.index = None
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         data = getattr(event.item, "data", None)
         if not data:
             return
+        # Clear selection in other lists for mutual exclusivity
+        self._clear_other_list_selections(event.list_view)
         # Remote/public box - show its files via network
         if isinstance(data, dict) and data.get("type") in ("remote", "public"):
             self.active_remote_box = data
@@ -1119,6 +1212,8 @@ class ShadowBoxApp(App):
         data = getattr(event.item, "data", None)
         if not data:
             return
+        # Clear selection in other lists for mutual exclusivity
+        self._clear_other_list_selections(event.list_view)
         # Remote/public boxes - track selection but don't fetch on highlight
         if isinstance(data, dict) and data.get("type") in ("remote", "public"):
             self.active_remote_box = data
@@ -1575,10 +1670,9 @@ class ShadowBoxApp(App):
     def _handle_live_search(self, result: Optional["LiveSearchResult"]) -> None:
         if not result:
             return
-        # Switch to the selected box
+        # Switch to the selected box (only user's own boxes are searchable)
         try:
             all_boxes = self.ctx.fm.list_user_boxes(self.ctx.user.user_id)
-            all_boxes += self.ctx.fm.list_shared_boxes(self.ctx.user.user_id)
             target_box = next((b for b in all_boxes if b.box_id == result.box_id), None)
             if target_box:
                 self.ctx.active_box = target_box
@@ -1599,6 +1693,52 @@ class ShadowBoxApp(App):
         """
         self.push_screen(TagSearchModal(), self._handle_filter_by_tag)
 
+    def _search_accessible_by_tag(self, tag: str, box_id: str | None = None, limit: int = 200):
+        """Search files by tag in all accessible boxes (owned + shared).
+        
+        Unlike search_by_tag which only searches user's own files,
+        this includes files from boxes shared with the user.
+        """
+        tag = (tag or "").strip()
+        if not tag:
+            return []
+        
+        user_id = self.ctx.user.user_id
+        
+        sql = """
+            SELECT DISTINCT f.*
+            FROM files f
+            JOIN tags t ON t.entity_type = 'file' AND t.entity_id = f.file_id
+            JOIN boxes b ON f.box_id = b.box_id
+            LEFT JOIN box_shares bs 
+                ON bs.box_id = b.box_id 
+                AND bs.shared_with_user_id = ?
+            WHERE t.tag_name = ?
+              AND f.status != 'deleted'
+              AND (
+                  b.user_id = ? 
+                  OR (
+                      bs.share_id IS NOT NULL 
+                      AND (bs.expires_at IS NULL OR bs.expires_at > CURRENT_TIMESTAMP)
+                  )
+              )
+        """
+        params: list = [user_id, tag, user_id]
+        
+        if box_id:
+            sql += " AND f.box_id = ?"
+            params.append(box_id)
+        
+        sql += " ORDER BY f.created_at DESC LIMIT ?"
+        params.append(limit)
+        
+        rows = self.ctx.db.fetch_all(sql, tuple(params))
+        
+        # Convert rows to FileMetadata with tags
+        file_ids = [r["file_id"] for r in rows]
+        tm = tags_map(self.ctx.db, file_ids)
+        return [row_to_metadata(r, tm.get(r["file_id"], [])) for r in rows]
+
     def _handle_filter_by_tag(self, tag):
         """
         Apply the tag filter and update the files table.
@@ -1609,18 +1749,12 @@ class ShadowBoxApp(App):
             return
 
         try:
-            user_id = self.ctx.user.user_id
             box_id = None
             if self.ctx.active_box:
                 box_id = self.ctx.active_box.box_id
 
-            hits = search_by_tag(
-                self.ctx.db,
-                tag,
-                user_id=user_id,
-                box_id=box_id,
-                limit=200,
-            )
+            # Search files by tag in all accessible boxes (owned + shared)
+            hits = self._search_accessible_by_tag(tag, box_id=box_id, limit=200)
         except Exception as exc:  # pragma: no cover - UI-only
             self._set_status("Tag search failed: %s" % exc)
             return
@@ -1672,7 +1806,6 @@ class ShadowBoxApp(App):
             )
             self.refresh_boxes()
             self.ctx.active_box = box
-            self._persist_last_box(box.box_id)
             self.refresh_files()
             self._set_status(f"Created box {box.box_name}")
         except Exception as exc:
@@ -1693,12 +1826,9 @@ class ShadowBoxApp(App):
         try:
             self.ctx.fm.delete_box(self.ctx.active_box.box_id)
             boxes = self.ctx.fm.list_user_boxes(self.ctx.user.user_id)
-            shared_boxes = self.ctx.fm.list_shared_boxes(self.ctx.user.user_id)
             self.ctx.active_box = None
             if boxes:
                 self.ctx.active_box = boxes[0]
-            elif shared_boxes:
-                self.ctx.active_box = shared_boxes[0]
             self.refresh_boxes()
             self.refresh_files()
             msg = "Box deleted"
@@ -1728,13 +1858,40 @@ class ShadowBoxApp(App):
         if self.ctx.active_box.user_id != self.ctx.user.user_id:
             self._set_status("Only owners can share boxes")
             return
-        # Check if already sharing or pending
+        # Toggle off if this box is already shared
         if self.ctx.active_box.box_id in self.active_shares:
             self._stop_sharing(self.ctx.active_box.box_id)
             return
         if self.ctx.active_box.box_id in self.pending_shares:
             self.notify("Share already in progress", severity="warning")
             return
+        # Check if another box is already shared (backend limitation: single TCP server)
+        if self.active_shares:
+            # Get the name of the currently shared box
+            current_box_id = next(iter(self.active_shares.keys()))
+            current_box_name = None
+            for box in self.ctx.fm.list_user_boxes(self.ctx.user.user_id):
+                if box.box_id == current_box_id:
+                    current_box_name = box.box_name
+                    break
+            current_box_name = current_box_name or "Unknown"
+            self.push_screen(
+                ReplaceShareConfirmModal(current_box_name, self.ctx.active_box.box_name),
+                self._handle_replace_share_confirm,
+            )
+            return
+        self._show_share_modal()
+
+    def _handle_replace_share_confirm(self, confirmed: bool) -> None:
+        if not confirmed:
+            return
+        # Stop existing share and proceed with new one
+        for existing_box_id in list(self.active_shares.keys()):
+            self._stop_sharing(existing_box_id)
+        self._show_share_modal()
+
+    def _show_share_modal(self) -> None:
+        """Show the share configuration modal."""
         self.push_screen(
             ShareBoxModal(self.ctx.active_box.box_name), self._handle_share_box
         )
@@ -1790,17 +1947,38 @@ class ShadowBoxApp(App):
             select_box(env, box_name)
 
             # Create share records for each write user BEFORE starting server
-            # First ensure each user exists in the DB (init_env auto-creates if missing)
+            # short TTL (10s), will extend while share is active
+            # If host crashes, shares auto-expire without manual cleanup
             share_errors = []
+            granted_user_ids: set[str] = set()
+            bsm = BoxShareModel(env["db"])
+            bm = BoxModel(env["db"])
+            
             for write_user in result.write_usernames:
-                # Create user if doesn't exist by calling init_env with their username
-                init_env(
-                    db_path=db_path, storage_root=storage_root, username=write_user
-                )
-                # Now share the box with them
-                share_result = share_box(env, box_name, write_user, "write")
-                if share_result.startswith("ERROR"):
-                    share_errors.append(f"{write_user}: {share_result}")
+                try:
+                    # Create user if doesn't exist by calling init_env with their username
+                    user_env = init_env(
+                        db_path=db_path, storage_root=storage_root, username=write_user
+                    )
+                    
+                    # Delete any existing share first (to update expiration)
+                    bsm.delete_by_box_and_user(env["box_id"], user_env["user_id"])
+                    
+                    # Create share with 10-second TTL
+                    share = BoxShare(
+                        box_id=env["box_id"],
+                        shared_by_user_id=env["user_id"],
+                        shared_with_user_id=user_env["user_id"],
+                        permission_level="write",
+                        expires_at=datetime.utcnow() + timedelta(seconds=10),
+                    )
+                    bsm.create(share)
+                    bm.set_shared(env["box_id"], True)
+                    
+                    # Track for extension
+                    granted_user_ids.add(user_env["user_id"])
+                except Exception as e:
+                    share_errors.append(f"{write_user}: {e}")
 
             context = {"mode": "core", "env": env}
 
@@ -1827,6 +2005,7 @@ class ShadowBoxApp(App):
                 "code": code,
                 "is_public": result.is_public,
                 "write_usernames": result.write_usernames,
+                "granted_user_ids": granted_user_ids,
                 "share_errors": share_errors,
                 "username": username,
                 "zeroconf": zeroconf,
@@ -1841,10 +2020,15 @@ class ShadowBoxApp(App):
             }
 
     def _stop_sharing(self, box_id: str) -> None:
-        """Stop sharing a box and cleanup mDNS registration and TCP server."""
+        """Stop sharing a box and cleanup mDNS registration and TCP server.
+        
+        Note: Database share records use TTL and will auto-expire in ~10 seconds.
+        No manual cleanup needed - just stop sharing by removing from active_shares.
+        """
         if box_id not in self.active_shares:
             return
-        zeroconf, info, code, is_public, stop_event = self.active_shares[box_id]
+        zeroconf, info, code, is_public, stop_event, _ = self.active_shares[box_id]
+        
         try:
             # Stop the TCP server
             stop_server()
@@ -1853,6 +2037,7 @@ class ShadowBoxApp(App):
             zeroconf.close()
         except Exception:
             pass
+        
         del self.active_shares[box_id]
         self.refresh_boxes()
         if is_public:
@@ -1906,6 +2091,13 @@ class ShadowBoxApp(App):
 
     # Edit file metadata (tags + description)
     def action_edit_file(self) -> None:
+        # Remote boxes require write permission on the source
+        if self.viewing_remote or self.active_remote_box:
+            self.push_screen(
+                AlertModal("Cannot edit file", "You don't have write permission on this box."),
+                lambda _: None,
+            )
+            return
         if not self._has_write_permission():
             self._set_status(
                 f"No write permission (current: {self.active_box_permission})"
@@ -1992,17 +2184,14 @@ class ShadowBoxApp(App):
         except Exception as exc:
             self._set_status("Backup Failed: %s" % exc)
 
-    def _persist_last_box(self, box_id: str) -> None:
-        from shadowbox.frontend.cli.config_store import load_config, save_config
-
-        cfg = load_config()
-        cfg["last_box_id"] = box_id
-        save_config(cfg)
-
     def _cleanup_shares(self) -> None:
-        """Cleanup all active mDNS shares and TCP servers on exit."""
+        """Cleanup all active mDNS shares and TCP servers on exit.
+        
+        Note: Database share records use TTL and will auto-expire.
+        No manual cleanup needed - if we crash, shares expire in ~10 seconds.
+        """
         for box_id in list(self.active_shares.keys()):
-            zeroconf, info, _, _, _ = self.active_shares[box_id]
+            zeroconf, info, _, _, _, _ = self.active_shares[box_id]
             try:
                 stop_server()
                 zeroconf.unregister_service(info)
@@ -2010,6 +2199,28 @@ class ShadowBoxApp(App):
             except Exception:
                 pass
         self.active_shares.clear()
+
+    def _extend_share_expiration(self) -> None:
+        """extend TTL of all active session shares.
+        
+        Runs every 3 seconds to keep shares alive while host is running.
+        If host crashes, shares auto-expire after ~10 seconds.
+        """
+        if not self.active_shares:
+            return
+        
+        new_expiry = datetime.utcnow() + timedelta(seconds=10)
+        
+        for box_id, (_, _, _, _, _, granted_user_ids) in self.active_shares.items():
+            for user_id in granted_user_ids:
+                try:
+                    self.ctx.db.execute(
+                        "UPDATE box_shares SET expires_at = ? WHERE box_id = ? AND shared_with_user_id = ?",
+                        (new_expiry.isoformat(), box_id, user_id),
+                    )
+                except Exception:
+                    # Best effort - if DB is busy, next extension will catch it
+                    pass
 
     def _discover_public_boxes(self) -> None:
         """Background discovery for public boxes on LAN (non-blocking)."""
@@ -2080,9 +2291,71 @@ class ShadowBoxApp(App):
 
         # Handle public box discovery completion
         if worker_name == "_discover_public_boxes_worker":
-            if result:
-                self.discovered_public = result
-                self._refresh_public_boxes()
+            new_discovered = result if result is not None else {}
+            # Check if active public box is no longer available
+            if (
+                self.active_remote_box
+                and self.active_remote_box.get("type") == "public"
+            ):
+                active_code = self.active_remote_box.get("code")
+                if active_code and active_code not in new_discovered:
+                    self.active_remote_box = None
+                    self.viewing_remote = False
+                    self.refresh_files()
+                    self.notify("Public box is no longer available", severity="warning")
+            
+            # Cross-reference: remove connected boxes whose IP now has a different/public share
+            # This handles the case where sharer stopped and reshared with a new code
+            discovered_ips = {info["ip"] for info in new_discovered.values()}
+            stale_connected = []
+            for code, info in self.connected_boxes.items():
+                if info["ip"] in discovered_ips:
+                    # Same IP is now advertising a (possibly different) public share
+                    # The old code-based connection is stale
+                    stale_connected.append(code)
+            if stale_connected:
+                for code in stale_connected:
+                    del self.connected_boxes[code]
+                # Check if active remote box was removed
+                if (
+                    self.active_remote_box
+                    and self.active_remote_box.get("type") == "remote"
+                    and self.active_remote_box.get("code") in stale_connected
+                ):
+                    self.active_remote_box = None
+                    self.viewing_remote = False
+                    self.refresh_files()
+                self.refresh_boxes()
+                self.notify(
+                    f"Removed {len(stale_connected)} stale connection(s) (reshared)",
+                    severity="warning",
+                )
+            
+            self.discovered_public = new_discovered
+            self._refresh_public_boxes()
+
+        # Handle liveness check completion
+        elif worker_name == "_check_liveness_worker" and result:
+            stale_codes = result
+            if stale_codes:
+                # Check if active remote box is being removed
+                active_removed = (
+                    self.active_remote_box
+                    and self.active_remote_box.get("code") in stale_codes
+                )
+                for code in stale_codes:
+                    if code in self.connected_boxes:
+                        del self.connected_boxes[code]
+                self.refresh_boxes()
+                # Clear file view if active box was removed
+                if active_removed:
+                    self.active_remote_box = None
+                    self.viewing_remote = False
+                    self.refresh_files()
+                self.notify(
+                    f"Removed {len(stale_codes)} unreachable box(es)",
+                    severity="warning",
+                )
 
         # Handle share worker completion
         elif worker_name == "share_worker" and result:
@@ -2095,6 +2368,7 @@ class ShadowBoxApp(App):
                     result["code"],
                     result["is_public"],
                     result["stop_event"],
+                    result.get("granted_user_ids", set()),
                 )
                 self.refresh_boxes()
 
@@ -2226,6 +2500,28 @@ class ShadowBoxApp(App):
             item.data = {"type": "public", "code": code, **info}
             self.public_boxes.append(item)
         self.public_boxes.refresh()
+
+    def _check_connected_box_liveness(self) -> None:
+        """Check if connected remote boxes are still reachable (non-blocking)."""
+        if not self.connected_boxes:
+            return
+        self.run_worker(
+            self._check_liveness_worker,
+            name="_check_liveness_worker",
+            exclusive=True,
+            thread=True,
+        )
+
+    def _check_liveness_worker(self) -> list[str]:
+        """Worker that checks liveness of connected boxes (runs in thread)."""
+        stale_codes: list[str] = []
+        for code, info in list(self.connected_boxes.items()):
+            try:
+                # Quick TCP connect check with short timeout
+                connect_and_request(info["ip"], info["port"], "PING", timeout=2)
+            except Exception:
+                stale_codes.append(code)
+        return stale_codes
 
     def action_quit(self) -> None:
         """Override quit to cleanup shares first."""
