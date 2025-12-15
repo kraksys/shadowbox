@@ -124,7 +124,7 @@ ShadowBox includes a utility to import and test the WikiBooks dataset from Kaggl
 Import WikiBooks data into ShadowBox using the following command:
 
 ```bash
-uv run python scripts/import_kaggle_datasets.py kaggle/wikibooks.zip --limit 50
+uv run python scripts/import_kaggle_datasets.py kaggle/wikibooks.zip --limit 50 --username yourname
 ```
 
 ### Available Options:
@@ -151,6 +151,10 @@ uv run python scripts/import_kaggle_datasets.py kaggle/wikibooks.zip \
   --username my-datasets \
   --box-name wikibooks-demo
 ```
+PLEASE NOTE: 
+If you do not submit the username flag, then the default datasets flag will not be visible when you run the application in its default user behavior (as it takes the username from your local system). 
+
+Therefore, it's recommended to run the command with the username flag to properly evaluate the results. 
 
 The script will:
 1. Extract the SQLite database from the zip file
@@ -205,26 +209,6 @@ ShadowBox can be run in a Docker container for isolated deployment.
 ## Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/) installed on your system
-- [Docker Compose](https://docs.docker.com/compose/install/) (optional, for easier management)
-
-## Using Docker Compose (Recommended)
-
-1. Navigate to the docker directory:
-```bash
-cd docker
-```
-
-2. Build and run the container:
-```bash
-docker-compose up --build
-```
-
-3. The application will start in interactive mode. You can use all keyboard shortcuts as normal.
-
-4. To stop the container:
-```bash
-docker-compose down
-```
 
 ## Using Docker Directly
 
@@ -301,6 +285,7 @@ For detailed technical documentation, see the state machine diagrams in the `doc
 Stavros Valsamis, Maxim Dmitrievich, Matthieu Klopp, Atanas Malinkov, Patrik Levak & Ahmed Al Kurwi.
 
 Software Development Course (Fall/Winter 2025)
+
 
 
 
