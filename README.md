@@ -78,7 +78,7 @@ uv run python -m shadowbox.frontend.cli.app
 
 The application will launch in your terminal with the interactive TUI.
 
-Notes: if the uv commands does not work, try putting ```bash python -m ``` before any of the commands (it might be because your executable tools folder is not in your computers PATH).
+Notes: if the uv commands does not work, try putting ```python -m ``` before any of the commands (it might be because your executable tools folder is not in your computers PATH).
 
 ## Keyboard Shortcuts (Cheat Sheet)
 This cheat sheet is also provided in the software itself by pressing `CTRL + P` and clicking on the Keys bar with every key functionality (which is more than the sheet that is provided here). The interface is designed to be navigated quickly using the keyboard.
@@ -301,6 +301,7 @@ For detailed technical documentation, see the state machine diagrams in the `doc
 Stavros Valsamis, Maxim Dmitrievich, Matthieu Klopp, Atanas Malinkov, Patrik Levak & Ahmed Al Kurwi.
 
 Software Development Course (Fall/Winter 2025)
+
 
 
 
