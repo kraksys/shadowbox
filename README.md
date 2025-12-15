@@ -4,7 +4,7 @@ README
 
 GitHub: https://github.com/kraksys/shadowbox
 
-License: MIT
+License: MIT https://github.com/kraksys/shadowbox/blob/main/LICENSE
 
 
 # What is ShadowBox?
@@ -78,6 +78,8 @@ uv run python -m shadowbox.frontend.cli.app
 
 The application will launch in your terminal with the interactive TUI.
 
+Notes: if the uv commands does not work, try putting ```bash python -m ``` before any of the commands (it might be because your executable tools folder is not in your computers PATH).
+
 ## Keyboard Shortcuts (Cheat Sheet)
 This cheat sheet is also provided in the software itself by pressing `CTRL + P` and clicking on the Keys bar with every key functionality (which is more than the sheet that is provided here). The interface is designed to be navigated quickly using the keyboard.
 
@@ -100,11 +102,12 @@ This cheat sheet is also provided in the software itself by pressing `CTRL + P` 
 The host can create a Box or use the default provided Box.
 On an initial setup (with no shadowbox.db present in the pwd - the user will be prompted for a new one) 
 
-- The Host selects a Box and presses `s`.
-- ShadowBox generates a random 4-letter code (e.g., `ABCD`) and starts a local TCP server.
+- The Host selects a Box and presses `s` and choses to publicly or privately host the box.
+- If the Host hosted a private box ShadowBox generates a random 4-letter code (e.g., `ABCD`) and starts a local TCP server.
 - The service `_shadowboxabcd._tcp.local` is broadcast.
 - The Client presses `c` or clicks the desired Box in the Public Box space and enters `ABCD`.
 - The Client resolves the Host's IP automatically and establishes a direct, secure TCP stream to download files.
+- If the Host choses to publicly host the box then everyone on the same network can access the box immediately.
 
 # Importing Kaggle Datasets
 
@@ -298,5 +301,6 @@ For detailed technical documentation, see the state machine diagrams in the `doc
 Stavros Valsamis, Maxim Dmitrievich, Matthieu Klopp, Atanas Malinkov, Patrik Levak & Ahmed Al Kurwi.
 
 Software Development Course (Fall/Winter 2025)
+
 
 
