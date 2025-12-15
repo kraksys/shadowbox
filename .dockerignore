@@ -1,0 +1,37 @@
+# Ignore git directory
+.git
+.gitignore
+
+# Ignore Python cache and build artifacts
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+build
+dist
+*.egg-info
+.pytest_cache
+.coverage
+htmlcov
+
+# Ignore virtual environments (major source of bloat)
+.venv
+venv
+ENV
+
+# Ignore local IDE settings
+.vscode
+.idea
+
+# Ignore large data directories
+storage
+kaggle
+shadowbox_data
+*.log
+*.sqlite
+*.zip
+*.pdf
+
+# Ignore the docker folder itself (optional, but good practice if not needed inside)
+docker

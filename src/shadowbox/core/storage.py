@@ -104,7 +104,10 @@ class Storage:
                 return self.encrypt.decrypt_json(raw, box_id)
             except Exception:
                 return {"box_id": box_id, "created_at": None, "files": {}}
-        return json.loads(raw.decode())
+        try:
+            return json.loads(raw.decode())
+        except Exception:
+            return {"box_id": box_id, "created_at": None, "files": {}}
 
     def save_metadata(
         self, user_id: str, box_id: str, metadata: Dict[str, Any]
