@@ -1529,10 +1529,9 @@ class ShadowBoxApp(App):
         if self.active_remote_box is not None:
             ip = self.active_remote_box["ip"]
             port = self.active_remote_box["port"]
-            username = self.ctx.user.username
-            self._set_status(f"Uploading to remote...")
+            self._set_status("Uploading to remote...")
             self.run_worker(
-                lambda: self._remote_upload_worker(ip, port, result.path, auth_user=username),
+                lambda: self._remote_upload_worker(ip, port, result.path),
                 name="remote_upload_worker",
                 exclusive=True,
                 thread=True,
@@ -1634,10 +1633,10 @@ class ShadowBoxApp(App):
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
-    def _remote_upload_worker(self, ip: str, port: int, local_path: str, auth_user: str | None = None) -> dict:
+    def _remote_upload_worker(self, ip: str, port: int, local_path: str) -> dict:
         """Worker that uploads a file to a remote box."""
         try:
-            res = cmd_put(ip, port, local_path, timeout=60, auth_user=auth_user)
+            res = cmd_put(ip, port, local_path, timeout=60)
             if isinstance(res, dict) and res.get("status") == "ok":
                 return {"success": True, "path": local_path}
             else:
@@ -1650,10 +1649,10 @@ class ShadowBoxApp(App):
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
-    def _remote_delete_worker(self, ip: str, port: int, filename: str, auth_user: str | None = None) -> dict:
+    def _remote_delete_worker(self, ip: str, port: int, filename: str) -> dict:
         """Worker that deletes a file from a remote box."""
         try:
-            res = cmd_delete(ip, port, filename, timeout=30, auth_user=auth_user)
+            res = cmd_delete(ip, port, filename, timeout=30)
             if isinstance(res, dict) and res.get("status") == "ok":
                 text = res.get("text", "")
                 if "ERROR" in text.upper():
@@ -1695,10 +1694,9 @@ class ShadowBoxApp(App):
         if self.active_remote_box is not None:
             ip = self.active_remote_box["ip"]
             port = self.active_remote_box["port"]
-            username = self.ctx.user.username
-            self._set_status(f"Deleting from remote...")
+            self._set_status("Deleting from remote...")
             self.run_worker(
-                lambda: self._remote_delete_worker(ip, port, filename, auth_user=username),
+                lambda: self._remote_delete_worker(ip, port, filename),
                 name="remote_delete_worker",
                 exclusive=True,
                 thread=True,
