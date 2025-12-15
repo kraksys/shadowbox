@@ -33,6 +33,13 @@ python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
 
+markers = [
+  "integration: marks tests as integration tests (involving I/O or DB)",
+]
+filterwarnings = [
+  "ignore:ResourceWarning",
+]
+
 [tool.coverage.run]
 source = ["src/shadowbox"]
 omit = ["*/tests/*", "*/test_*.py"]
