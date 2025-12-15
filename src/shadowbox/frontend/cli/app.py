@@ -202,6 +202,50 @@ class InitialSetupModal(ModalScreen[Optional[InitialSetupResult]]):
             self._submit()
 
 
+class SetMasterPasswordModal(ModalScreen[Optional[str]]):
+    """Modal to set the master password for encryption after initial setup."""
+
+    def compose(self) -> ComposeResult:  # pragma: no cover - UI only
+        with Vertical(classes="dialog"):
+            yield Static("Set Master Password", classes="title")
+            yield Label("This enables encryption for new boxes and files.")
+            yield Label("Password")
+            self.password_input = Input(placeholder="••••••", password=True)
+            yield self.password_input
+            yield Label("Confirm Password")
+            self.confirm_input = Input(placeholder="••••••", password=True)
+            yield self.confirm_input
+            with Horizontal():
+                yield Button("Cancel", id="cancel")
+                yield Button("Set Password", id="ok", variant="primary")
+
+    def on_mount(self) -> None:  # pragma: no cover
+        self.set_focus(self.password_input)
+
+    def _submit(self) -> None:
+        password = (self.password_input.value or "").strip()
+        confirm = (self.confirm_input.value or "").strip()
+        if not password:
+            self.app.notify("Password cannot be empty", severity="error")
+            return
+        if password != confirm:
+            self.app.notify("Passwords do not match", severity="error")
+            return
+        self.dismiss(password)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:  # pragma: no cover
+        if event.button.id == "cancel":
+            self.dismiss(None)
+        else:
+            self._submit()
+
+    def on_key(self, event) -> None:  # pragma: no cover
+        if event.key == "escape":
+            self.dismiss(None)
+        elif event.key == "enter":
+            self._submit()
+
+
 class LiveSearchResult:
     """Result from live search - selected box and file."""
 
@@ -953,6 +997,7 @@ class ShadowBoxApp(App):
         ("v", "show_versions", "File Versions"),
         ("k", "backup_database", "Backup DB"),
         ("t", "filter_by_tag", "Filter by Tag"),
+        ("m", "set_master_password", "Master Password"),
     ]
 
     def __init__(self, ctx: AppContext | None = None):
@@ -1198,8 +1243,10 @@ class ShadowBoxApp(App):
         # Remote/public box - show its files via network
         if isinstance(data, dict) and data.get("type") in ("remote", "public"):
             self.active_remote_box = data
-            # Remote boxes use permission from connection info, default to read
-            self.active_box_permission = data.get("permission", "read")
+            # Code-based connections (remote) assume write access, public boxes are read-only
+            # Server will enforce actual permissions - show alert on failure
+            default_perm = "write" if data.get("type") == "remote" else "read"
+            self.active_box_permission = data.get("permission", default_perm)
             self._show_remote_box_files(data, show_modal=False)
             return
         # Local box - clear remote selection
@@ -1217,7 +1264,9 @@ class ShadowBoxApp(App):
         # Remote/public boxes - track selection but don't fetch on highlight
         if isinstance(data, dict) and data.get("type") in ("remote", "public"):
             self.active_remote_box = data
-            self.active_box_permission = data.get("permission", "read")
+            # Code-based connections (remote) assume write access, public boxes are read-only
+            default_perm = "write" if data.get("type") == "remote" else "read"
+            self.active_box_permission = data.get("permission", default_perm)
             return
         # Local box - clear remote selection
         self.active_remote_box = None
@@ -1434,12 +1483,10 @@ class ShadowBoxApp(App):
     def _has_write_permission(self) -> bool:
         """Check if current user has write permission on active box.
 
-        For remote boxes, we always return True and let the server enforce
-        permissions - if the server denies the operation, we show the error.
+        Uses the stored permission level for both local and remote boxes.
+        For remote boxes, permission defaults to 'read' unless the host
+        grants higher access.
         """
-        # Remote boxes: let the server decide, don't block on frontend
-        if self.active_remote_box is not None:
-            return True
         return self.active_box_permission in ("owner", "admin", "write")
 
     def _update_status(self) -> None:
@@ -1482,9 +1529,10 @@ class ShadowBoxApp(App):
         if self.active_remote_box is not None:
             ip = self.active_remote_box["ip"]
             port = self.active_remote_box["port"]
+            username = self.ctx.user.username
             self._set_status(f"Uploading to remote...")
             self.run_worker(
-                lambda: self._remote_upload_worker(ip, port, result.path),
+                lambda: self._remote_upload_worker(ip, port, result.path, auth_user=username),
                 name="remote_upload_worker",
                 exclusive=True,
                 thread=True,
@@ -1586,10 +1634,10 @@ class ShadowBoxApp(App):
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
-    def _remote_upload_worker(self, ip: str, port: int, local_path: str) -> dict:
+    def _remote_upload_worker(self, ip: str, port: int, local_path: str, auth_user: str | None = None) -> dict:
         """Worker that uploads a file to a remote box."""
         try:
-            res = cmd_put(ip, port, local_path, timeout=60)
+            res = cmd_put(ip, port, local_path, timeout=60, auth_user=auth_user)
             if isinstance(res, dict) and res.get("status") == "ok":
                 return {"success": True, "path": local_path}
             else:
@@ -1602,10 +1650,10 @@ class ShadowBoxApp(App):
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
-    def _remote_delete_worker(self, ip: str, port: int, filename: str) -> dict:
+    def _remote_delete_worker(self, ip: str, port: int, filename: str, auth_user: str | None = None) -> dict:
         """Worker that deletes a file from a remote box."""
         try:
-            res = cmd_delete(ip, port, filename, timeout=30)
+            res = cmd_delete(ip, port, filename, timeout=30, auth_user=auth_user)
             if isinstance(res, dict) and res.get("status") == "ok":
                 text = res.get("text", "")
                 if "ERROR" in text.upper():
@@ -1647,9 +1695,10 @@ class ShadowBoxApp(App):
         if self.active_remote_box is not None:
             ip = self.active_remote_box["ip"]
             port = self.active_remote_box["port"]
+            username = self.ctx.user.username
             self._set_status(f"Deleting from remote...")
             self.run_worker(
-                lambda: self._remote_delete_worker(ip, port, filename),
+                lambda: self._remote_delete_worker(ip, port, filename, auth_user=username),
                 name="remote_delete_worker",
                 exclusive=True,
                 thread=True,
@@ -1810,6 +1859,33 @@ class ShadowBoxApp(App):
             self._set_status(f"Created box {box.box_name}")
         except Exception as exc:
             self._set_status(f"Create box failed: {exc}")
+
+    def action_set_master_password(self) -> None:
+        """Open modal to set master password for encryption."""
+        if self.ctx.fm.encryption_enabled:
+            self.push_screen(
+                AlertModal(
+                    "Already Configured",
+                    "Master password is already set. Encryption is enabled.",
+                )
+            )
+            return
+        self.push_screen(SetMasterPasswordModal(), self._handle_set_master_password)
+
+    def _handle_set_master_password(self, password: str | None) -> None:
+        if not password:
+            return
+        try:
+            self.ctx.fm.setup_encryption(password)
+            self.notify("Encryption enabled successfully!", severity="information")
+            self._set_status("Master password set - encryption now available")
+        except Exception as exc:
+            self.push_screen(
+                AlertModal(
+                    "Encryption Setup Failed",
+                    f"Could not configure master password: {exc}",
+                )
+            )
 
     def action_delete_box(self) -> None:
         if not self.ctx.active_box:
@@ -2091,13 +2167,6 @@ class ShadowBoxApp(App):
 
     # Edit file metadata (tags + description)
     def action_edit_file(self) -> None:
-        # Remote boxes require write permission on the source
-        if self.viewing_remote or self.active_remote_box:
-            self.push_screen(
-                AlertModal("Cannot edit file", "You don't have write permission on this box."),
-                lambda _: None,
-            )
-            return
         if not self._has_write_permission():
             self._set_status(
                 f"No write permission (current: {self.active_box_permission})"
