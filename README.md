@@ -218,13 +218,25 @@ docker build -t shadowbox:latest -f docker/Dockerfile .
 ```
 
 2. Run the container with host networking (required for LAN discovery):
+- Fedora / SELinux:
 ```bash
-docker run -it --rm \
-  --network host \
-  -v $(pwd)/docker/shdwbx/data:/shdwbx/data \
-  -e TERM=xterm-256color \
-  -e COLORTERM=truecolor \
-  shadowbox:latest
+    docker run -it --rm \
+      --network host \
+      -v "$(pwd)/storage:/data/shadowbox:Z" \
+      -v "$(pwd)/shadowbox.db:/app/shadowbox.db:Z" \
+      -e TERM=xterm-256color \
+      -e COLORTERM=truecolor \
+      shadowbox:latest
+```
+- Other systems:
+```bash
+    docker run -it --rm \
+      --network host \
+      -v "$(pwd)/storage:/data/shadowbox" \
+      -v "$(pwd)/shadowbox.db:/app/shadowbox.db" \
+      -e TERM=xterm-256color \
+      -e COLORTERM=truecolor \
+      shadowbox:latest
 ```
 
 ### Docker Run Options Explained:
@@ -285,6 +297,7 @@ For detailed technical documentation, see the state machine diagrams in the `doc
 Stavros Valsamis, Maxim Dmitrievich, Matthieu Klopp, Atanas Malinkov, Patrik Levak & Ahmed Al Kurwi.
 
 Software Development Course (Fall/Winter 2025)
+
 
 
 
