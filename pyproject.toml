@@ -65,9 +65,33 @@ version = "0.1.0"
 description = "ShadowBox LAN server prototype"
 requires-python = ">=3.11"
 dependencies = [
-    "cryptography>=46.0.3",
+    "python-dotenv",
+    "click",
+    "rich",
     "zeroconf",
     "textual>=0.58.0",
+    "pyperclip>=1.9.0",
+    "cryptography>=42.0.0",
+    "argon2-cffi>=23.1.0",
+    "keyring>=25.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov",
+    "pytest-asyncio",
+    "pytest-mock",
+    "pytest-benchmark",
+    "black",
+    "flake8",
+    "mypy",
+    "pre-commit",
+    "pylint",
+]
+docs = [
+    "sphinx",
+    "sphinx-rtd-theme",
 ]
 
 [tool.setuptools]

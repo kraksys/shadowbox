@@ -4,6 +4,7 @@ click
 rich
 zeroconf
 textual>=0.58.0
+pyperclip
 
 # Testing
 pytest
