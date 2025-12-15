@@ -113,21 +113,15 @@ class ServiceFinder:
             pass
 
 
-def connect_and_request(ip, port, request_line, recv_file=False, out_path=None, timeout=10, auth_user=None):
+def connect_and_request(ip, port, request_line, recv_file=False, out_path=None, timeout=10):
     """
     Connect to ip:port, send a single request_line (ending with '\n'), and either:
       - if recv_file==False: read until the remote closes or a blank line and print text
       - if recv_file==True: stream bytes to out_path until remote closes
-    
-    If auth_user is provided, sends AUTH <username> prefix before the actual command.
     """
     print(f"Connecting to {ip}:{port} ...")
     with socket.create_connection((ip, port), timeout=timeout) as s:
         s.settimeout(timeout)  # 10s might be too much
-
-        # send AUTH prefix if provided (for permission enforcement)
-        if auth_user:
-            s.sendall(f"AUTH {auth_user}\n".encode())
 
         # send request
         if not request_line.endswith("\n"):
@@ -219,11 +213,10 @@ def cmd_get(ip, port, filename, out_path=None):
     return res
 
 
-def cmd_put(ip, port, local_path, remote_name=None, timeout=60, auth_user=None):
+def cmd_put(ip, port, local_path, remote_name=None, timeout=60):
     """
     Upload a local file to the server.
     Protocol:
-      Client -> [AUTH <username>\n] (optional, for permission enforcement)
       Client -> "PUT <remote_name> <size>\n"
       Server -> "READY\n"  (or "ERROR: ...\n")
       Client -> exactly <size> bytes
@@ -243,9 +236,6 @@ def cmd_put(ip, port, local_path, remote_name=None, timeout=60, auth_user=None):
     print(f"Uploading {local_path} -> {ip}:{port} as {remote_name} ({size} bytes)")
     with socket.create_connection((ip, port), timeout=timeout) as s:
         s.settimeout(timeout)
-        # Send AUTH prefix if provided (for permission enforcement)
-        if auth_user:
-            s.sendall(f"AUTH {auth_user}\n".encode())
         s.sendall(f"PUT {remote_name} {size}\n".encode())
 
         # wait for READY or ERROR line (single-line response)
@@ -288,8 +278,8 @@ def cmd_put(ip, port, local_path, remote_name=None, timeout=60, auth_user=None):
         return {"status": "ok", "reply": final_text}
 
 
-def cmd_delete(ip, port, filename, timeout=30, auth_user=None):
-    res = connect_and_request(ip, port, f"DELETE {filename}", timeout=timeout, auth_user=auth_user)
+def cmd_delete(ip, port, filename, timeout=30):
+    res = connect_and_request(ip, port, f"DELETE {filename}", timeout=timeout)
     if res["status"] == "ok":
         print(res["text"])
         # In case we want to delete the file on the client side too.
